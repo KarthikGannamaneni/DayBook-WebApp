@@ -50,6 +50,10 @@ jobs:
         env:
           GITHUB_PAGES: '1'
           NEXT_PUBLIC_BASE_PATH: /DayBook-WebApp
+          # Temporary: password sign-in for the private testing build, so the
+          # site is usable without the magic-link redirect URLs configured.
+          # Unset this to go back to magic links.
+          NEXT_PUBLIC_PASSWORD_LOGIN: '1'
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: pnpm --filter web build
