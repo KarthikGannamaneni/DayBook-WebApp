@@ -1,0 +1,73 @@
+-- ============================================================================
+-- Shared test harness. Included by each suite with \ir, because pgTAP suites
+-- run in separate transactions and cannot see each other's functions.
+--
+-- The .psql extension is deliberate: `supabase test db` globs tests/**/*.sql
+-- and reports any file without a plan as a failure, so a shared include cannot
+-- be a .sql file sitting in that tree.
+-- ============================================================================
+create schema if not exists tests;
+
+-- Become a real `authenticated` user with a JWT claim. Running these suites as
+-- superuser would bypass every policy and pass regardless, which is the most
+-- common way an RLS test suite ends up proving nothing.
+create or replace function tests.authenticate_as(p_user uuid)
+returns void language plpgsql as $$
+begin
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', p_user::text, 'role', 'authenticated')::text, true);
+  execute 'set local role authenticated';
+end;
+$$;
+
+-- Back to the bot's view of the world: the service role, which bypasses RLS.
+create or replace function tests.as_service()
+returns void language plpgsql as $$
+begin
+  reset role;
+  perform set_config('request.jwt.claims', null, true);
+end;
+$$;
+
+-- How many rows a statement actually touched. An UPDATE blocked by RLS does
+-- not raise — it silently matches nothing, which is the failure mode worth
+-- asserting on.
+create or replace function tests.rows_affected(p_sql text)
+returns int language plpgsql as $$
+declare v int;
+begin
+  execute 'with a as (' || p_sql || ' returning 1) select count(*)::int from a' into v;
+  return v;
+end;
+$$;
+
+-- Run a statement and force deferred constraints to check now, so an invariant
+-- that would fire at COMMIT can be asserted inside a rolled-back test.
+create or replace function tests.attempt(p_sql text)
+returns void language plpgsql as $$
+begin
+  execute p_sql;
+  execute 'set constraints all immediate';
+end;
+$$;
+
+-- Insert an auth user the way GoTrue does, with triggers LIVE.
+--
+-- The obvious shortcut is `set session_replication_role = replica`, which skips
+-- foreign-key checks — and also skips triggers, including the owner-seeding one
+-- under test. Doing that produced no owners rows at all and a suite that
+-- passed anyway.
+create or replace function tests.make_user(p_id uuid, p_email text)
+returns void language plpgsql as $$
+begin
+  insert into auth.users (instance_id, id, aud, role, email, encrypted_password,
+    email_confirmed_at, created_at, updated_at, confirmation_token, recovery_token,
+    email_change, email_change_token_new, email_change_token_current,
+    phone_change, phone_change_token, reauthentication_token)
+  values ('00000000-0000-0000-0000-000000000000', p_id, 'authenticated', 'authenticated',
+    p_email, '', now(), now(), now(), '', '', '', '', '', '', '', '');
+end;
+$$;
+
+grant usage on schema tests to authenticated;
+grant execute on all functions in schema tests to authenticated;

@@ -8,3 +8,6 @@ dist/
 .DS_Store
 bot/auth_state/
 supabase/.temp/
+
+# TypeScript incremental build state — machine-local, never reviewable.
+*.tsbuildinfo

@@ -1,38 +1,67 @@
 /**
  * Storage ports. Two of them, because they fail independently: Postgres can be
- * up while R2 is unreachable, and the pipeline needs to keep the bill either
- * way.
+ * up while the bucket is unreachable, and the pipeline has to keep the document
+ * either way.
  */
+
+import type { TxnStatus } from '../extract/types.ts';
 
 export interface GroupLink {
   ownerId: string;
-  /** Null when the group is known but not yet pointed at a project. */
-  projectId: string | null;
 }
 
 export interface SavedRawMessage {
   id: string;
 }
 
-export interface SaveExpenseInput {
+/**
+ * `existing: true` means the document was already in the books — the same
+ * invoice forwarded as a reminder, or a second screenshot of one payment. The
+ * pipeline stops there rather than attaching another copy of the image.
+ */
+export interface SavedDocument {
+  id: string;
+  existing: boolean;
+}
+
+export interface SaveInvoiceInput {
   ownerId: string;
-  projectId: string;
+  customerName: string | null;
   amountMinor: bigint | null;
-  spentOn: string | null;
-  vendor: string | null;
+  invoiceNo: string | null;
+  issuedOn: string | null;
+  dueOn: string | null;
   description: string | null;
-  categoryId: string | null;
-  postedByWaId: string | null;
-  postedByName: string | null;
   sourceMessageId: string;
-  status: 'confirmed' | 'needs_review';
   confidence: number;
   extractionNotes: string | null;
 }
 
+export interface SavePaymentInput {
+  ownerId: string;
+  payerName: string | null;
+  amountMinor: bigint | null;
+  paidOn: string | null;
+  utr: string | null;
+  payerVpa: string | null;
+  payeeVpa: string | null;
+  app: string | null;
+  txnStatus: TxnStatus;
+  note: string | null;
+  sourceMessageId: string;
+  confidence: number;
+  extractionNotes: string | null;
+}
+
+export type FileOwner =
+  | { kind: 'invoice'; id: string }
+  | { kind: 'payment'; id: string }
+  /** An image whose document could not be created, because extraction failed. */
+  | { kind: 'raw_message'; id: string };
+
 export interface SaveFileInput {
   ownerId: string;
-  expenseId: string;
+  attachTo: FileOwner;
   storagePath: string;
   thumbnailPath: string | null;
   mimeType: string;
@@ -42,7 +71,7 @@ export interface SaveFileInput {
 }
 
 export interface Store {
-  /** Which owner and project a group belongs to, or null if unclaimed. */
+  /** Which owner a group belongs to, or null if nobody has claimed it. */
   findGroup(waGroupId: string): Promise<GroupLink | null>;
 
   /**
@@ -60,32 +89,33 @@ export interface Store {
     receivedAt: Date;
   }): Promise<SavedRawMessage | null>;
 
-  listCategoryNames(ownerId: string): Promise<string[]>;
-  resolveCategoryId(ownerId: string, name: string | null): Promise<string | null>;
+  /** Records what the model decided this message was, for debugging a bad run. */
+  markRawMessage(
+    rawMessageId: string,
+    fields: { docKind: 'invoice' | 'payment' | 'neither'; needsClassification?: boolean },
+  ): Promise<void>;
 
-  saveExpense(input: SaveExpenseInput): Promise<{ id: string }>;
+  saveInvoice(input: SaveInvoiceInput): Promise<SavedDocument>;
+  savePayment(input: SavePaymentInput): Promise<SavedDocument>;
   saveFile(input: SaveFileInput): Promise<void>;
 
   /**
-   * Same amount, same day, same vendor, same project, within the window.
-   * Flagged for review rather than discarded: buying cement twice in one day
-   * is ordinary, and silently dropping the second one loses a real expense.
+   * Asks the database for candidate pairings on the opposite side of the
+   * ledger and writes any it is sure of as proposals. Returns how many.
+   *
+   * The matcher is SQL, not TypeScript, because the review screen needs the
+   * same ranking live for its shortlist. See docs/p0-tech-design.md §1.
    */
-  findRecentSimilarExpense(input: {
-    projectId: string;
-    amountMinor: bigint;
-    spentOn: string;
-    vendor: string | null;
-    withinDays: number;
-  }): Promise<boolean>;
-}
-
-export interface StoredFile {
-  path: string;
-  thumbnailPath: string | null;
+  proposeMatches(side: 'invoice' | 'payment', documentId: string): Promise<number>;
 }
 
 export interface FileStore {
-  /** Full quality, no re-encoding. A bill that loses a digit is worthless. */
+  /** Full quality, no re-encoding. A document that loses a digit is worthless. */
   put(path: string, bytes: Uint8Array, mimeType: string): Promise<void>;
 }
+
+/**
+ * Optional. The review screen shows two images side by side, and a weekly
+ * session over a phone connection cannot fetch 600 KB per item.
+ */
+export type Thumbnailer = (bytes: Uint8Array, mimeType: string) => Promise<Uint8Array | null>;

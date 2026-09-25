@@ -3,17 +3,22 @@ import { createClient } from '@supabase/supabase-js';
 import type { FileStore } from './types.ts';
 
 /**
- * Bills in Supabase Storage.
+ * Invoices and payment screenshots in Supabase Storage.
  *
  * Uploaded with the service role, read by the owner through a signed URL the
- * browser mints under its own session. That is what lets the web app be
- * static files with no server anywhere.
+ * browser mints under its own session. That is what lets the web app be static
+ * files with no server anywhere.
  *
- * The original goes up byte-for-byte. A compressed bill that loses a digit in
- * a dispute is worse than no bill.
+ * The original goes up byte-for-byte. A compressed document that loses a digit
+ * in a dispute is worse than no document.
  */
+export const DOCUMENTS_BUCKET = 'documents';
+
 export class SupabaseFileStore implements FileStore {
-  constructor(private readonly db: SupabaseClient, private readonly bucket = 'bills') {}
+  constructor(
+    private readonly db: SupabaseClient,
+    private readonly bucket = DOCUMENTS_BUCKET,
+  ) {}
 
   static fromEnv(): SupabaseFileStore {
     const url = process.env.SUPABASE_URL;

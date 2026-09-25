@@ -1,11 +1,33 @@
-# P0 technical design — WhatsApp expense capture
+# P0 technical design — WhatsApp payment reconciliation
 
-**Status:** proposal, no code written.
-**Target:** <20 owners, <50 groups, a few hundred messages/day.
+**Status:** proposal. Supersedes the expense-capture design of 2026-09-25.
+**Target:** <20 businesses, one accounting group each, a few hundred messages/day.
 **Principle applied throughout:** fewest moving parts that work.
 
-Four things in the brief turned out to be wrong or out of date when checked
-against current terms. They are flagged inline and summarised in §10.
+## What changed, and why this is a rewrite
+
+The previous version of this document designed **expense capture**: bills in,
+one row each, a project total. The product requirement is **payment
+reconciliation**: invoices issued and UPI payments received, arriving in any
+order, paired to each other, with the exception-review moment as the product.
+
+That is a different question — *who still owes me* rather than *what did I
+spend* — and it reshapes everything downstream of ingestion.
+
+| | Carried over unchanged | Replaced |
+|---|---|---|
+| Ingestion | Baileys, the VM, session-as-credential | — |
+| Idempotency | `raw_messages` + unique `wa_message_id` | — |
+| Extraction | One Gemini call, structured JSON, media inline | The schema, and a document-type fork |
+| Tenancy | `owners`, RLS on `owner_id`, service-role discipline | `projects` → gone; see §3 |
+| Money | `bigint` paise | — |
+| Hosting | Supabase + GitHub Pages + magic link | — |
+| Domain | — | `expenses` → `invoices` + `payments` + `allocations` |
+| Matching | — | **entirely new**, and it is the product |
+| Owner view | — | **entirely new**; review is screen one, not screen five |
+
+§2 is substantially unchanged and still correct; the four corrections to the
+original brief still stand (§10). §§3–7 and §9 are new.
 
 ---
 
@@ -13,39 +35,51 @@ against current terms. They are flagged inline and summarised in §10.
 
 ```mermaid
 flowchart LR
-    WA[WhatsApp groups] -->|Baileys WebSocket| BOT
+    WA[WhatsApp accounting group] -->|Baileys WebSocket| BOT
 
     subgraph VM["Oracle Always Free VM — one always-on Node process"]
         BOT[MessageSource<br/>Baileys adapter]
-        PIPE[Pipeline<br/>dedupe → classify+extract → store]
+        PIPE[Pipeline<br/>dedupe → classify+extract → insert]
         BOT --> PIPE
     end
 
     PIPE -->|1 call per message| GEM[Gemini 2.5 Flash<br/>structured JSON]
-    PIPE -->|originals| R2[(Cloudflare R2<br/>bills bucket)]
-    PIPE -->|rows| DB[(Supabase Postgres<br/>+ Auth)]
+    PIPE -->|originals| ST[(Supabase Storage<br/>private bucket)]
+    PIPE -->|invoice / payment rows| DB[(Supabase Postgres)]
+    PIPE -->|propose_matches| MATCH
 
-    OWNER[Owner] -->|magic link| WEB[Next.js on Cloudflare Pages]
-    WEB --> DB
-    WEB -->|signed URL| R2
+    subgraph DB2["in Postgres"]
+        MATCH[Matcher<br/>pg_trgm + amount + date]
+        MATCH --> ALLOC[(allocations<br/>proposed)]
+    end
+
+    OWNER[Owner] -->|magic link| WEB[Next.js on GitHub Pages]
+    WEB -->|accept / reject / re-match / undo| DB
+    WEB -->|shortlist: same matcher| MATCH
+    WEB -->|signed URL| ST
 ```
 
-**Walkthrough.** One Node process on a free Oracle VM holds a WhatsApp Web
-session through Baileys and receives every message in every group the bot has
-been added to. For each message it first writes a raw row (cheap insurance
-against a bad classification), then makes **one** Gemini call that both decides
-whether the message is an expense and, if it is, extracts the fields — one call
-rather than two, because a classify-then-extract split doubles the latency and
-the failure modes for no accuracy gain at this scale. If it is an expense, any
-image or PDF goes to R2 at full quality, an `expenses` row is written against
-the group's project, and anything the model was unsure about lands in the
-review queue rather than the ledger. The owner signs in to a Next.js app with a
-magic link and sees only their own rows, enforced by Postgres row-level
-security rather than by the UI.
+**Walkthrough.** One Node process holds a WhatsApp Web session and receives
+every message in the business's accounting group. For each message it writes a
+raw row first, then makes **one** Gemini call that decides what the message is
+— an invoice, a UPI payment confirmation, or neither — and extracts the fields
+for whichever it is. The document is inserted, its image stored, and then the
+matcher is asked for candidate pairings on the opposite side of the ledger.
+High-confidence unambiguous pairings are written as **proposed** allocations,
+never applied silently. The owner opens the app, works the review queue, and
+accepts, rejects, re-matches or partially allocates. Accepted allocations are
+what move a balance.
 
-Everything above runs on free tiers. The single process is deliberate: at a few
-hundred messages a day, a queue would be more machinery to operate than the
-problem justifies.
+**The matcher lives in Postgres, not in the bot.** This is the one structural
+decision that differs from the obvious design, and it is driven by the
+requirement that re-match show a shortlist *instantly*: the review screen needs
+the same ranking the bot used, live, while the owner is looking at a payment.
+Two implementations of a money-matching rule would diverge, and a round trip to
+the bot for a dropdown is absurd. One `security invoker` SQL function, two
+callers — the bot after insert, the browser on re-match.
+
+Everything runs on free tiers. Weekly review cadence means latency is
+irrelevant, which is the strongest possible argument against a queue.
 
 ---
 
@@ -58,311 +92,427 @@ problem justifies.
 OpenClaw's WhatsApp channel *is Baileys*. Its own documentation says:
 "production-ready via WhatsApp Web (Baileys)". So option (b) is not an
 alternative transport to option (a) — it is option (a) plus a large autonomous
-agent framework on top.
-
-| | Baileys direct | OpenClaw |
-|---|---|---|
-| Transport | Baileys | **Baileys** (same) |
-| Ban risk | Same | **Same** |
-| Execution model | Deterministic function you wrote | Agent loop that decides what to do |
-| Attack surface | One library | Agent runtime with shell, filesystem and web-browsing tools |
-| Dependencies | ~1 | A whole platform |
-| Group support | Yes | Yes, with sender allowlists |
-
-The deciding factor is the brief's own requirement that the pipeline be
-deterministic. OpenClaw's docs are explicit that it "is fundamentally an
-autonomous agent framework, not a deterministic pipeline," and that structured
-entry points "still funnel into the underlying agent runtime."
-
-For financial data that is disqualifying on its own. An agent that can run
-shell commands and browse the web, reading a stream of untrusted text and
-images from a group anyone can post to, is a prompt-injection target with a
-shell attached. A photo with "ignore previous instructions" written on the
-bill is a plausible attack, not a hypothetical. Baileys gives the same
-capability with none of that surface.
-
-**Use OpenClaw if** you later want a conversational assistant in the group
-("what did we spend on cement last month?"). That is a different product and
-belongs behind its own credentials.
+agent runtime, carrying identical ban risk while adding a tool-calling loop
+driven by text that anyone in the group can write. For a product whose inputs
+are untrusted images and whose outputs are money, that is strictly more risk
+for no transport benefit.
 
 ### 2.2 The official API — the brief's premise is *nearly* right
 
-The brief says the Cloud API "doesn't practically support bots in regular
-groups". A Groups API now exists on the Cloud API, so the literal claim is out
-of date — but the conclusion still holds, for three reasons:
-
-- The business must be an **Official Business Account**.
-- Groups are capped at **8 participants**.
-- There is **no endpoint to add a participant**, and only one Cloud API
-  business may operate in a group.
-
-Critically, the bot can only work in groups the *business number creates*. It
-cannot join the existing group a contractor already runs with their site
-supervisors — which is the entire product. So: unofficial route for P0, and
-keep the `MessageSource` interface the brief asks for.
-
-Be clear-eyed about what that interface buys. Swapping to the official API is
-not a drop-in: it means asking every customer to abandon their existing group
-and move ≤8 people into a business-created one. The interface makes the *code*
-swappable; it cannot make the *migration* painless.
-
-**Ban risk, stated plainly.** Baileys is an unofficial reimplementation of
-WhatsApp Web and using it violates WhatsApp's terms. The number can be banned
-with no warning or appeal. Mitigations: use a **dedicated SIM** that is not
-anyone's personal number, keep volume low and human-paced, never send bulk or
-unsolicited messages, and accept that re-pairing after a ban means a new
-number and re-adding the bot to every group. Treat the number as disposable
-and the session as something you will re-establish, not as infrastructure.
-
-### 2.4 Hosting: GitHub Pages, and what it costs
-
-Changed on 2026-09-25, after the P0 build. The brief's priority was **zero
-hosting dependencies long-term**, and GitHub Pages delivers that better than
-anything else here: the repository already exists, there is no second account,
-no plan that can change under you, and no commercial-use clause to outgrow.
-
-Pages runs no server, so the web app is a static export — every screen is a
-client component talking to Supabase with the anon key, and row-level security
-is what decides what comes back. That is not a weakening: the anon key grants
-nothing on its own, and the 15 pgTAP assertions are the proof.
-
-Three consequences, none of them free:
-
-**File storage moved from R2 to Supabase Storage.** This is the one that forced
-itself. R2 presigning needs a secret, and a browser cannot hold one. Supabase
-mints a signed URL under the user's own session, so the server disappears —
-at the cost of the runway §5 argued for: **1 GB instead of 10 GB, roughly
-three weeks instead of seven months** at the expected volume. Revisit when the
-bucket fills; the `FileStore` port means it is one adapter, and the R2 one is
-in git history.
-
-**Dynamic segments became query parameters.** `/projects/[id]` cannot be
-prerendered without knowing every uuid in advance, so it is `/project/?id=…`,
-read in the browser.
-
-**Server actions became direct Supabase calls.** Same authorization either way
-— it was always RLS doing the work — but the mutation now happens in the
-client.
-
-What Pages does not solve: the app still needs a **cloud Supabase project**.
-A static site cannot reach `127.0.0.1`, and no choice of host changes that.
+A Cloud API Groups API now exists, so "the official API cannot read groups" is
+out of date. It is still unusable here: capped at 8 participants, requires an
+Official Business Account, and only works in groups the business itself
+created. A shopkeeper's existing accounting group qualifies on none of the
+three. The conclusion — unofficial route for P0 — stands; the reasoning and the
+migration story change.
 
 ### 2.3 Everything else
 
 | Component | Choice | Free tier | Risk / note |
 |---|---|---|---|
-| Bot host | **Oracle Always Free, AMD micro** (`VM.Standard.E2.1.Micro`) | 2 instances, 1/8 OCPU, 1 GB RAM each, always on | See below — deliberately *not* ARM |
-| DB + Auth | **Supabase** | 500 MB DB, 50k MAU, 2 projects | Pauses after 7 days idle — the bot's own writes prevent this |
-| File storage | **Supabase Storage** | 1 GB | Was R2; forced by the hosting change — see §2.4 |
-| Web app | **GitHub Pages** (static export) | Free, no account beyond GitHub | Changed 2026-09-25 — see §2.4 |
-| Extraction | **Gemini 2.5 Flash** | 15 RPM, 1,500 req/day | **Free tier trains on your data** — see below |
+| Bot host | **Oracle Always Free, AMD micro** (`VM.Standard.E2.1.Micro`) | 2 instances, 1/8 OCPU, 1 GB RAM | Deliberately *not* ARM — see below |
+| DB + Auth | **Supabase** | 500 MB DB, 50k MAU, 2 projects | Pauses after 7 days idle; the bot's writes prevent it |
+| File storage | **Supabase Storage** | 1 GB | Forced by the hosting choice — see §2.4, §5 |
+| Web app | **GitHub Pages** (static export) | Free, no account beyond GitHub | See §2.4 |
+| Extraction | **Gemini 2.5 Flash** | 15 RPM, 1,500 req/day | **Free tier trains on your data** — and now that data is your *customers'* |
+| Fuzzy matching | **`pg_trgm`** | in Postgres | No service, no index server, no embedding model |
 
-**Why AMD micro and not the ARM A1 the brief suggests.** Oracle reclaims idle
-Always Free A1 instances when 95th-percentile CPU, network *and* memory are all
-under 20% across 7 days. A bot holding an idle WebSocket and handling a few
-hundred messages a day sits under all three — the exact workload the policy
-kills. The reclamation rule applies to **A1 shapes only**, so the older AMD
-micro is immune. It is also actually obtainable: A1 capacity is frequently
-unavailable in Indian regions, and Oracle halved the A1 allocation to 2 OCPU /
-12 GB in June 2026. 1 GB of RAM is enough for one Node process holding a
-WhatsApp session.
+**Why AMD micro and not ARM A1.** Oracle reclaims idle Always Free A1
+instances when 95th-percentile CPU, network *and* memory are all under 20%
+across 7 days. A bot holding an idle WebSocket sits under all three — the exact
+workload the policy kills. The rule applies to **A1 shapes only**, so the older
+AMD micro is immune, and it is actually obtainable: A1 capacity is frequently
+unavailable in Indian regions, and Oracle halved the A1 allocation in June 2026.
 
-**Why not Vercel.** Vercel's Hobby plan prohibits commercial use — it is a
-term of service, not a soft limit, and this is a product sold to businesses.
-Cloudflare Pages' free tier permits commercial use. If you would rather not
-adapt Next.js for Cloudflare, **Vercel Pro is $20/month** and is the
-zero-friction paid option.
+**Why not Vercel.** Vercel's Hobby plan prohibits commercial use — a term of
+service, not a soft limit, and this is sold to businesses. Pages is free and
+permits it. Vercel Pro at $20/month is the zero-friction paid option.
 
-**Gemini's free tier is not free of consequences.** Google may use free-tier
-prompts and responses to improve its products, including human review. You
-would be feeding photographs of customers' bills — vendor names, amounts,
-phone numbers, sometimes GSTINs — into that. That is fine for a pilot with
-synthetic or consented data and **not** fine for real customers.
+**Gemini's free tier costs more here than it did before.** Google may use
+free-tier prompts and responses to improve its products, including human
+review. Under the expense design that meant leaking your own vendor data.
+Under this one it means leaking **your customers'** names, phone numbers, UPI
+handles and transaction references — third-party personal data, which makes the
+business a data fiduciary for it under the DPDP Act.
 
-Recommendation: build and pilot on the free tier with your own test bills,
-then switch to the paid tier before onboarding a real customer. At a few
-hundred images a day the paid cost is single-digit dollars a month — the
-cheapest line item in this document. *(Verify current per-token pricing at
-build time; it moves.)*
+That moves the paid tier from a pre-launch task to a **precondition for the
+first real customer**. Cost at a few hundred images a day is single-digit
+dollars a month. *(Verify per-token pricing at build time; it moves.)*
 
-On handwritten Indian bills specifically: Gemini Flash handles images and PDFs
-natively and is the right starting point. Do not add a separate OCR stage.
-Measure accuracy on ~50 real bills before considering anything more elaborate
-— the review queue exists precisely so that imperfect extraction is safe.
+### 2.4 Hosting: GitHub Pages, and what it costs
+
+The priority is **zero hosting dependencies long-term**, and Pages delivers it:
+the repository already exists, there is no second account, no plan that can
+change under you, no commercial-use clause to outgrow.
+
+Pages runs no server, so the web app is a static export — every screen is a
+client component talking to Supabase with the anon key, and RLS decides what
+comes back. Not a weakening: the anon key grants nothing on its own, and the
+pgTAP suite is the proof.
+
+Three consequences:
+
+- **Storage is Supabase, not R2.** R2 presigning needs a secret and a browser
+  cannot hold one. Supabase mints a signed URL under the user's own session.
+  The cost is runway — 1 GB rather than 10 — quantified in §5.
+- **Dynamic segments are query parameters.** `/invoice/?id=…`, read in the
+  browser, because a uuid cannot be prerendered.
+- **Mutations are direct Supabase calls**, including the transactional ones,
+  which is why bulk-accept is an RPC (§7) rather than a loop in React.
+
+Pages does not remove the need for a **cloud Supabase project**. A static site
+cannot reach `127.0.0.1`.
 
 ---
 
 ## 3. Data model
 
-Seven tables. Roles are absent by design but the shape allows them later: every
-row hangs off `owner_id`, so a future `project_members` table adds access
-without reshaping anything.
+The centre of this design is the **allocation**: a statement that ₹X of a
+particular payment settles a particular invoice. Everything else — the pending
+pool, the counts, undo, partial payments — is derived from allocations rather
+than stored separately.
+
+### The tables
 
 ```
-owners          id · email · phone · created_at
-                (mirrors auth.users; the tenant root)
+owners             id · email · phone · created_at
+                   (mirrors auth.users; the tenant root)
 
-projects        id · owner_id → owners · name · created_at · archived_at
+whatsapp_groups    id · owner_id → owners
+                   wa_group_id (unique) · name · linked_at
+                   -- one group ↔ one owner. No project_id; see below.
 
-whatsapp_groups id · owner_id → owners · project_id → projects
-                wa_group_id (unique) · name · linked_at
-                -- one group ↔ exactly one project
+raw_messages       id · owner_id · wa_group_id · wa_message_id (unique)
+                   sender_wa_id · sender_name · body · has_media
+                   doc_kind ('invoice'|'payment'|'neither'|null)
+                   received_at · purge_after (date)
+                   -- 30-day retention; recovery path for misclassification
 
-categories      id · owner_id → owners · name · is_default
-                -- seeded per owner on signup
+invoices           id · owner_id → owners
+                   customer_name · customer_name_norm (generated)
+                   amount_minor (bigint, INR paise)
+                   invoice_no (nullable) · issued_on (date) · due_on (nullable)
+                   description · source_message_id → raw_messages
+                   confidence (numeric 0–1) · extraction_notes
+                   entered_by ('bot'|'owner')
+                   created_at · updated_at · deleted_at
 
-expenses        id · owner_id → owners · project_id → projects
-                amount_minor (bigint, INR paise) · spent_on (date)
-                vendor · description · category_id → categories
-                posted_by_wa_id · posted_by_name
-                source_message_id → raw_messages
-                status ('confirmed' | 'needs_review')
-                confidence (numeric 0–1) · extraction_notes
-                created_at · updated_at · deleted_at
+payments           id · owner_id → owners
+                   payer_name · payer_name_norm (generated)
+                   amount_minor (bigint, INR paise)
+                   paid_on (date) · utr (nullable) · payer_vpa (nullable)
+                   payee_vpa (nullable) · app (nullable)
+                   txn_status ('completed'|'pending'|'failed')
+                   note (nullable) · method ('upi'|'cash'|'bank'|'other')
+                   source_message_id → raw_messages
+                   confidence · extraction_notes · entered_by
+                   created_at · updated_at · deleted_at
 
-expense_files   id · expense_id → expenses · storage_path · mime_type
-                size_bytes · wa_message_id · sender_wa_id
-                captured_at · thumbnail_path (nullable)
+allocations        id · owner_id → owners
+                   invoice_id → invoices · payment_id → payments
+                   amount_minor (bigint)       -- how much of this payment
+                                               -- settles this invoice
+                   score (numeric 0–1) · reasons (text[])
+                   state ('proposed'|'accepted'|'rejected')
+                   source ('auto'|'owner')
+                   decided_at · decided_by → owners
+                   created_at
 
-raw_messages    id · wa_group_id · wa_message_id (unique) · sender_wa_id
-                body · has_media · received_at · purge_after (date)
-                -- 30-day retention; the recovery path for misclassification
+allocation_events  id · allocation_id → allocations · owner_id
+                   from_state · to_state · amount_minor
+                   actor ('auto'|'owner') · at
+                   -- append-only. This is what makes undo correct.
+
+document_files     id · owner_id · invoice_id (nullable) · payment_id (nullable)
+                   storage_path · thumbnail_path (nullable) · mime_type
+                   size_bytes · wa_message_id · sender_wa_id · captured_at
+                   -- exactly one of invoice_id / payment_id is non-null
 ```
 
-Three deliberate choices:
+### Why it is shaped this way
 
-- **Money is `bigint` paise, never a float.** A rupee amount in a float is a
-  rounding error waiting to become a dispute.
-- **`wa_message_id` is unique on `raw_messages`.** This is the idempotency key
-  that makes the whole pipeline safe to retry (§6).
-- **Soft delete on `expenses`.** An owner deleting an expense should not
-  destroy the link to the original bill.
+**Allocations are many-to-many, because the requirement says so.** Partial
+payments and split invoices are both named in the PRD. One payment can settle
+three invoices; one invoice can take four instalments. A `match_id` column on
+either side cannot express that, and discovering it after the review UI is
+built means rewriting the schema, the counts and every screen. This is the most
+expensive thing in the document to get wrong, so it is decided first.
+
+**The pending pool is a view, not a table.** Pending means "has an unallocated
+remainder":
+
+```
+invoice.balance_minor = amount_minor − Σ(accepted allocations)
+payment.unapplied_minor = amount_minor − Σ(accepted allocations)
+```
+
+There is no pool table and no state machine to drift out of sync with the
+ledger. A ₹50,000 invoice with ₹20,000 accepted is 40% settled and still in the
+pool for ₹30,000 — partial payments work without a special case.
+
+**Rejected allocations are kept, not deleted.** Otherwise rejecting a wrong
+pairing just makes the matcher propose it again on the next run, forever. A
+rejection is a fact about that pair and it is load-bearing input to §4.
+
+**`allocation_events` is append-only.** The PRD asks for undo twice, and undo
+has to survive a page refresh. Inverting the last event is a two-line
+operation; reconstructing intent from a mutable `state` column is not. It also
+answers "who accepted this ₹45,000 match, and when", which any product touching
+money wants regardless.
+
+**`txn_status` is not decoration.** A screenshot of a *failed* or *pending* UPI
+transaction is a screenshot of money that did not arrive. Only `completed`
+creates a settleable payment; the others are stored and shown, never allocated.
+Omitting this field produces a ledger that says paid when the bank says no.
+
+**`payee_vpa` is captured so it can be checked.** A forwarded screenshot of a
+payment made to somebody else's handle is not a receipt for this business —
+sometimes an honest mistake, occasionally not. P0 stores it and shows it on the
+review screen; a P1 setting holds the business's own handles and flags
+mismatches automatically.
+
+**`projects` is gone.** The PRD describes one accounting group into which staff
+forward documents for many customers. Customer identity therefore comes from
+the documents, not from the group, so a group needs only an owner. Grouping by
+site or project can return as a P1 label; inventing it now would be modelling a
+requirement nobody stated.
+
+**There is deliberately no `customers` table in P0.** Names arrive from OCR in
+several spellings and auto-creating a row per variant produces fifty customers
+where there are twelve, plus a merge UI to build on day one. P0 keeps the name
+as text on both sides, normalised into a generated column, and matches text to
+text. A view grouping by `customer_name_norm` answers "what does Ravi owe"
+well enough — and tells you how bad the name problem actually is before you
+build an entity around it. See §10.
+
+**Two dedupe keys the expense design did not have**, both because documents get
+re-sent constantly in WhatsApp groups:
+
+| Key | Constraint | Why |
+|---|---|---|
+| `utr` | unique on `(owner_id, utr)` where not null | The UPI reference is globally unique per transaction. Two screenshots of one payment collapse to one row |
+| `invoice_no` | unique on `(owner_id, invoice_no)` where not null | People forward the same invoice as a reminder. Without this, receivables double every chase |
+
+`wa_message_id` catches redelivery; these catch re-posting, which is a
+different and more common event.
+
+### Invariants enforced in the database
+
+These are correctness *and* security properties — the matcher's input is model
+output derived from images anyone in the group can post, so the invariants, not
+the prompt, are the defence.
+
+```
+Σ(accepted allocations for an invoice) ≤ invoices.amount_minor
+Σ(accepted allocations for a payment) ≤ payments.amount_minor
+allocations.amount_minor > 0
+unique (invoice_id, payment_id) where state <> 'rejected'
+an allocation's invoice and payment share the same owner_id
+only payments with txn_status = 'completed' may be allocated
+```
+
+The two sums are deferred constraint triggers, so a multi-row bulk accept is
+checked once at commit rather than row by row. Over-allocation must be
+impossible even through a bug in the RPC.
+
+Per the repository's rules, every one of these ships with its pgTAP assertions
+in the same change, every view is `security invoker`, and any
+`security definer` function pins `search_path`.
 
 ---
 
-## 4. Message pipeline
+## 4. Matching
+
+### What can actually be matched
+
+Static UPI collection is the whole reason this product exists — no dynamic QR,
+no invoice ID in the payment — so there is usually no shared key. The
+available signals, strongest first:
+
+| Signal | Strength | Notes |
+|---|---|---|
+| Invoice number in the payment note | **Decisive** | Free when present. Ask a real customer how often payers type anything (§10) |
+| UTR quoted on an invoice or in a reply | **Decisive** | Happens when staff annotate. Cheap to check |
+| Amount equal to an invoice's **remaining balance** | Strong | Balance, not original amount, so instalments match cleanly |
+| Payer name ≈ customer name | Medium, and script-dependent | See the risk in §10 |
+| Payment dated on or after the invoice, within a window | Weak | A tiebreaker, never a reason |
+| Amount less than a balance | Very weak alone | Any payment is a possible partial of any larger invoice |
+
+### Scoring
 
 ```
-receive → dedupe → persist raw → classify+extract (1 LLM call)
-       → store file → save expense → confidence gate
+score = reference_hit ? 1.00
+      : 0.60 × amount_fit
+      + 0.30 × name_similarity
+      + 0.10 × date_fit
 ```
 
-1. **Receive.** Baileys event. Ignore anything from a group not in
-   `whatsapp_groups`, and ignore the bot's own messages.
-2. **Dedupe.** Insert into `raw_messages` with `wa_message_id` unique. A
-   conflict means we have seen it: stop.
-3. **Persist raw** *before* calling the model, so a crash mid-pipeline loses
-   nothing and the 30-day recovery window starts immediately.
-4. **Classify + extract** in one call (schema below). Media is sent inline.
-5. **Store file.** Only if `is_expense`. Original at full quality to R2.
-6. **Save expense** against the group's project.
-7. **Confidence gate.** `confidence < 0.75`, or any required field null, →
-   `status = 'needs_review'`. Otherwise `'confirmed'`.
+- `amount_fit` — 1.0 if the payment equals the invoice balance exactly, 0.5 if
+  it is a plausible partial (less than the balance, more than 10% of it), 0
+  otherwise.
+- `name_similarity` — `pg_trgm` similarity over the normalised names. Normalise
+  by lowercasing, stripping honorifics (`sri`, `smt`, `m/s`, `shri`),
+  stripping punctuation and collapsing whitespace. A GIN trigram index makes
+  the shortlist query fast enough for a keystroke.
+- `date_fit` — 1.0 within 30 days after the invoice, tapering to 0 at 90; **0
+  if the payment predates the invoice**, which is usually a sign of the wrong
+  pair rather than an advance.
 
-### Prompt
+A payment dated before its invoice is additionally **vetoed from auto-proposal
+outright**, not merely scored at zero. Scoring alone cannot express the intent:
+an exact amount and an exact name are worth 0.90 between them, which clears the
+threshold on their own, so the date term could never actually stop anything.
+The arithmetic looked sufficient and wasn't — the test caught it, not the
+formula.
 
-```
-You extract expense records from messages in a WhatsApp group used by a
-small business in South India. Messages may be English, Telugu, or both
-mixed in one message. Bills may be handwritten, blurry, or photographed at
-an angle.
+### What gets proposed, and what never does
 
-Decide first whether this message records money the business SPENT.
-
-NOT expenses: greetings, planning, questions, "I will pay tomorrow",
-photos of work or materials with no amount, forwarded promotions,
-payment requests that have not been paid yet.
-
-ARE expenses: a bill or invoice image, a payment screenshot, or text
-stating an amount that was paid.
-
-If it is an expense, extract:
-- amount: the TOTAL paid, in rupees. If the bill shows a grand total and
-  line items, take the grand total. Never sum the items yourself.
-- date: when the money was spent (the bill date, not today) as YYYY-MM-DD.
-  If absent, use the message date supplied below.
-- vendor: who was paid. Shop name if visible, else the person's name.
-- description: a short phrase in English, under 60 characters.
-- category: exactly one of the provided list, else "Other".
-
-Rules:
-- Return null for anything you cannot read. Never guess a number.
-- Confidence must reflect the amount specifically. A clear printed total
-  is high; a smudged handwritten figure is low even if everything else is
-  legible.
-- Telugu amounts in words ("రెండు వేలు" = 2000) should be converted.
-
-Message date: {message_date}
-Sender: {sender_name}
-Available categories: {category_list}
-Message text: {text}
+```mermaid
+stateDiagram-v2
+    [*] --> unmatched: document inserted
+    unmatched --> proposed: unique, >= 0.90, settles in full, dates in order
+    unmatched --> ambiguous: 2+ candidates within 0.05
+    unmatched --> unmatched: no candidate above 0.50
+    ambiguous --> proposed: owner picks from shortlist
+    proposed --> accepted: owner accepts / bulk accept
+    proposed --> rejected: owner rejects
+    accepted --> proposed: undo
+    rejected --> proposed: undo
+    accepted --> [*]: balance moves
 ```
 
-### JSON schema
+Three rules do the work:
 
-```json
+1. **Nothing is applied silently.** A pairing the matcher is sure of becomes a
+   *proposed* allocation, which the owner clears in one tap or in a bulk
+   accept. The PRD asks not to be made to confirm the obvious 90% one at a
+   time — that is an argument for bulk accept, not for a ledger that changes
+   while nobody is looking.
+2. **Ambiguity is never resolved by the matcher.** Two invoices for ₹10,000 is
+   the PRD's own example, and round amounts collide constantly. When the top
+   candidates are within 0.05, all of them go to the shortlist and none is
+   proposed. Guessing here is how a reconciliation product loses trust in one
+   afternoon.
+3. **Partials are always reviewed in P0.** A payment smaller than a balance
+   could be an instalment, a different invoice entirely, or a discount. There
+   is no accuracy data yet to justify automating it.
+
+A fourth rule follows from the first three rather than standing beside them:
+every threshold here is a **veto**, and none of them is a vote. A candidate has
+to clear score, uniqueness, full settlement and date order independently. A
+weighted sum that lets two strong signals outvote one disqualifying one is how a
+matcher ends up confidently wrong.
+
+Rejected pairs are excluded from future scoring for that pair only — rejecting
+"this payment is not for that invoice" must not remove the payment from
+matching altogether.
+
+### When matching runs
+
+`propose_matches(owner_id, doc_kind, doc_id)` is called:
+
+- after a document is inserted by the bot, on the **opposite** side of the
+  ledger (new payment → search open invoices; new invoice → search unapplied
+  payments), which is how order-independence is achieved without a pool table;
+- when the owner corrects an amount, name or date, because the old proposal was
+  scored on wrong data;
+- when the owner rejects a proposal, to offer the next best;
+- on demand from the review screen, as the shortlist query.
+
+It is **derivable and idempotent**: it only ever writes `proposed` rows and
+never touches `accepted` ones, so it is safe to re-run over everything after a
+scoring change. That is why it is safe to call it last in the pipeline (§5) —
+a matcher failure costs a proposal, never a document.
+
+---
+
+## 5. Message pipeline and file storage
+
+```
+receive → dedupe → persist raw → classify + extract (1 LLM call)
+       → insert invoice | payment → store file → propose matches
+```
+
+1. **Receive.** Baileys event. Ignore groups not in `whatsapp_groups`, and the
+   bot's own messages.
+2. **Dedupe.** Insert into `raw_messages`; the unique `wa_message_id` is the
+   idempotency key. A conflict means we have seen it: stop.
+3. **Persist raw** *before* the model call, so a crash loses nothing and the
+   30-day recovery window starts immediately.
+4. **Classify + extract** in one call. The model decides `invoice` |
+   `payment` | `neither` and fills only the relevant branch — one call rather
+   than two, because a split doubles latency and failure modes for no accuracy
+   gain at this scale.
+5. **Insert** the invoice or payment, on the second dedupe keys (`utr`,
+   `invoice_no`). A conflict here means the document was re-posted: link the
+   new `raw_message` to the existing row and stop.
+6. **Store the file** after the row, so a storage outage cannot cost a
+   document. A document without its image is recoverable; an image with no row
+   is invisible.
+7. **Propose matches** last, for the reasons in §4.
+
+The ordering guarantees are the ones the expense pipeline already had — raw
+before the model, file after the row, nothing dropped on failure — and they are
+asserted in `bot/test/pipeline.test.ts`. Steps 4–7 are what changed.
+
+### Extraction schema
+
+```jsonc
 {
-  "type": "object",
-  "required": ["is_expense", "confidence"],
-  "properties": {
-    "is_expense": { "type": "boolean" },
-    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-    "amount_rupees": { "type": ["number", "null"] },
-    "date": { "type": ["string", "null"], "format": "date" },
-    "vendor": { "type": ["string", "null"] },
-    "description": { "type": ["string", "null"] },
-    "category": { "type": ["string", "null"] },
-    "language": { "type": "string", "enum": ["en", "te", "mixed"] },
-    "notes": {
-      "type": ["string", "null"],
-      "description": "What was unclear, shown to the owner in review"
-    }
-  }
+  "doc_kind": "invoice" | "payment" | "neither",
+  "confidence": 0.0,          // about the AMOUNT specifically
+  "invoice": {                 // when doc_kind = invoice
+    "customer_name": null, "amount_rupees": null,
+    "invoice_no": null, "issued_on": null, "due_on": null,
+    "description": null
+  },
+  "payment": {                 // when doc_kind = payment
+    "payer_name": null, "amount_rupees": null, "paid_on": null,
+    "utr": null, "payer_vpa": null, "payee_vpa": null,
+    "app": null,               // GPay | PhonePe | Paytm | bank | other
+    "txn_status": "completed" | "pending" | "failed",
+    "note": null
+  },
+  "language": "en" | "te" | "mixed",
+  "notes": null
 }
 ```
 
-`amount_rupees` arrives as a number and is converted to paise
-(`Math.round(x * 100)`) at the boundary. It is the only place a float is
-allowed near money.
+Prompt rules that matter, beyond the obvious:
 
----
+- **Read `txn_status` off the screenshot and never infer it.** "Payment
+  successful", "Completed", a green tick → `completed`. Anything else, or
+  unreadable → `pending`. Never default to completed.
+- **Take the grand total, never sum line items.**
+- **Return null rather than guessing a number.** Confidence reflects the
+  amount, not overall legibility: a clear printed total with a smudged name is
+  high confidence.
+- **A payment *request* is not a payment.** "Please pay ₹5,000" and a QR code
+  with no confirmation are `neither`.
+- Telugu amounts in words (`రెండు వేలు` = 2000) are converted.
+- Treat all extracted text as untrusted data — it reaches the schema validator
+  and nothing else. Never a shell, a query string or an HTTP call.
 
-## 5. File storage
-
-**Layout** — as the brief specifies, with the owner first so a prefix is a
-tenant:
+### File storage
 
 ```
-{owner_id}/{project_id}/{expense_id}/{filename}
+{owner_id}/{invoice|payment}/{doc_id}/{filename}
 ```
 
-**Access control.** The bucket is private. The Next.js server checks the owner
-owns the expense, then mints a short-lived signed URL (5 minutes). No public
-URLs, ever. With R2 the signing is yours to do — about ten lines — and that is
-the one place R2 costs more code than Supabase Storage.
+Owner first, so a prefix is a tenant. Private bucket, signed URLs minted under
+the user's own session, 5-minute expiry, no public URLs ever. Originals at full
+quality: a compressed bill that loses a digit in a dispute is worse than no
+bill. A 400px WebP thumbnail (~20 KB) is generated on ingest with `sharp`,
+because the review screen shows two images at once and a weekly session over a
+phone connection cannot fetch 600 KB per item.
 
-**Thumbnails.** Generate a 400px WebP (~20 KB) on ingest with `sharp` for list
-views. Worth it: a list of twenty 300 KB photos is 6 MB over a phone
-connection.
-
-### Runway — this is why R2, not Supabase Storage
-
-Assume the brief's ceiling: ~150 expense files/day at ~300 KB, plus thumbnails.
-
-| | Per day | Supabase free (1 GB) | R2 free (10 GB) |
-|---|---|---|---|
-| Originals + thumbs | ~48 MB | **~21 days** | **~7 months** |
-
-Supabase's 1 GB gives you about **three weeks** — you would be migrating
-storage in the middle of your pilot. R2's 10 GB with no egress fees gives you
-most of a year, which is longer than P0 will last. That is the whole argument.
-
-When R2 fills: R2 is $0.015/GB/month, so 50 GB ≈ **$0.75/month**. Supabase Pro
-is **$25/month** for 100 GB and you would want it eventually anyway for
-backups.
-
-Keeping originals at full quality is non-negotiable per the brief — a
-compressed bill that loses a digit in a dispute is worse than no bill.
+**Runway.** At ~150 documents/day and ~300 KB each, plus thumbnails, Supabase's
+1 GB gives roughly **three weeks**. That is the cost of the Pages decision
+(§2.4) and it will force a move mid-pilot. The `FileStore` port means R2 is one
+adapter — 10 GB free, ~$0.75/month at 50 GB — and reinstating it means putting
+a signing endpoint somewhere, which means a server again. Supabase Pro at
+$25/month for 100 GB is the alternative, and backups make it worth having
+eventually anyway. Decide when the bucket is at 70%, not when it is full.
 
 ---
 
@@ -370,129 +520,237 @@ compressed bill that loses a digit in a dispute is worse than no bill.
 
 | Failure | Handling |
 |---|---|
-| **Bot disconnects** | Baileys auto-reconnects; persist auth state to disk so a restart does not need re-pairing. `systemd` with `Restart=always`. On reconnect, Baileys delivers missed messages — the `wa_message_id` unique constraint makes replay safe. |
-| **Session logged out** (banned, or "log out from all devices") | Unrecoverable without human action. Alert the owner by email and stop cleanly rather than crash-looping. This *will* happen eventually. |
-| **LLM error / timeout** | Retry twice with backoff. Then save the expense as `needs_review` with the raw text and file attached. **Never drop the message** — the raw row and the file are the source of truth; extraction is the convenience layer. |
-| **Rate limit** (15 RPM free) | A few hundred messages/day is ~0.2 RPM average, but bursts happen when someone uploads a day of bills at once. A simple in-process queue with 1 concurrent call and 4s spacing is sufficient — this is the one place a queue earns its keep, and it is an array, not Redis. |
-| **Same bill posted twice** | Two different `wa_message_id`s, so dedupe does not catch it. Detect on `(project_id, amount_minor, spent_on, vendor)` within 7 days and flag the second as `needs_review` with a "possible duplicate" note. Flag, never auto-discard — genuinely buying the same cement twice on one day is ordinary. |
-| **Message edited** | Baileys reports edits. Re-run extraction; if an expense already exists, move it to `needs_review` showing both versions. Do not silently overwrite a figure the owner may have already checked. |
-| **Message deleted** | Mark the raw row deleted and flag any linked expense for review. Do not auto-delete the expense: a deleted message is not a refund, and the bill may already be in the books. |
+| **Bot disconnects** | Baileys auto-reconnects; auth state on disk so a restart does not re-pair. `systemd`, `Restart=always`. Replay is safe: `wa_message_id` is unique |
+| **Session logged out** (banned, or "log out from all devices") | Unrecoverable without a human. Email the owner and stop cleanly rather than crash-loop. This *will* happen eventually |
+| **LLM error / timeout** | Retry twice with backoff, then store the document as `needs_review` with the image and raw text. **Never drop the message** — the raw row and the file are the source of truth |
+| **Rate limit** (15 RPM free) | ~0.2 RPM average, but a day of documents arrives in one burst. One concurrent call, 4s spacing, in-process. This is the one place a queue earns its keep, and it is an array, not Redis |
+| **Same payment screenshot posted twice** | Caught by unique `utr`. Without a readable UTR, flagged on `(amount_minor, paid_on, payer_name_norm)` within 7 days as a possible duplicate — flagged, never discarded |
+| **Same invoice forwarded as a reminder** | Caught by unique `invoice_no`. Without one, flagged the same way. Silently creating a second receivable is the worst available outcome |
+| **Message edited** | Baileys reports edits. Re-extract; if a document exists, flag it for review showing both versions and re-run matching. Never silently overwrite a figure the owner may have accepted |
+| **Message deleted** | Mark the raw row deleted and flag the document. Do not cascade: a deleted message is not a refund |
+| **Payment that never finds an invoice** | Money arrived and the ledger cannot say what for. Surfaced after 7 days as *unapplied*, never hidden. This is a real signal — an unbilled job, or a payment to the wrong business |
+| **Invoice that never finds a payment** | The normal case. Not a failure — it is the outstanding balance, and it is the product's main answer |
+| **Matcher proposes nothing** | Also normal. The review queue is proposals *and* unmatched documents; an empty proposal list must not read as "nothing to do" |
 
 ---
 
-## 7. Owner view
+## 7. Owner view — the review experience is the product
 
-Six screens. No supervisor, no approvals.
+The PRD is explicit that this is where the product is won or lost, so it is
+specified in more detail than anything else here. Five screens; review is the
+first, not the fifth.
 
-1. **Sign in** — email magic link. Phone OTP needs an SMS provider and, in
-   India, DLT registration: weeks of lead time. Email is free and instant;
-   start there.
-2. **Projects** — cards with name and running total. Primary action: open.
-3. **Project** — expense list, filters for category and date range, running
-   total for the filtered set. Each row: amount, vendor, date, category, a
-   paperclip if a file is attached.
-4. **Expense detail** — the original image or PDF full-screen, the extracted
-   fields beside it, and the original message text. Edit any field, change
-   category, delete. The file is the evidence; the fields are the claim.
-5. **Needs review** — the queue, oldest first. Each item shows the bill, what
-   the model extracted, and `notes` explaining the doubt. Two actions: fix and
-   confirm, or discard as not-an-expense. This is the screen that decides
-   whether the product is trusted, so it should be the fastest one to use.
-6. **Settings** — categories (add, rename, archive) and WhatsApp groups (list
-   the groups the bot is in, assign each to a project).
+### 1. Review — the weekly session
+
+**Header, always visible:** `Matched · Pending · Needs review`, with amounts,
+not just counts. The PRD asks for a clear "done" feeling, and a session ends
+when needs-review is zero.
+
+**Bulk accept, at the top.** *"12 matches look certain — ₹3,40,500. Accept all
+/ Review them."* One transactional RPC, not a loop in the browser: a
+half-applied bulk accept over money is the kind of bug that permanently ends
+trust in the automation. The deferred constraints in §3 check the whole batch
+at commit.
+
+A consequence of §4 worth stating plainly, because it fell out of building this
+rather than out of designing it: since `propose_matches` writes only pairings
+that are unique, exact, in date order and above 0.90, **everything in the
+proposal list is by construction one of "the obvious ones"**. So bulk accept
+covers the whole list rather than a subset of it, and the one-at-a-time card
+exists for the owner who wants to look anyway. The genuinely uncertain work is
+not in this list at all — it is the *unapplied payments*, money that arrived
+with no pairing confident enough to propose, and that is where the shortlist
+earns its keep. The review screen is therefore three queues, not one:
+
+| Queue | What it is | The action |
+|---|---|---|
+| Proposals | The matcher is sure | Accept all, or step through |
+| Unapplied payments | Money in, nothing to attach it to | Open the shortlist |
+| Needs a human first | Unreadable, or unclassifiable | Read it and fix the fields |
+
+**Then one proposal at a time, not a spreadsheet.** Payment screenshot left,
+invoice right, both as images with extracted fields beneath. Between them the
+score and its reasons in plain words:
+
+> **0.94** · amount exact ₹45,000 · "Ravi Kumar" ≈ "R Kumar" (0.71) · paid 2
+> days after invoice
+
+Showing the reasons is not decoration. A score with no explanation is a number
+to be distrusted; a reason is something the owner can check at a glance, which
+is the difference between a two-minute session and a two-hour one.
+
+**Actions:** Accept (primary) · Reject · Re-match · Partial.
+
+- **Re-match** opens the shortlist immediately — the same matcher function,
+  ranked, each row showing amount, name, date, score. No search box to type
+  into first; the PRD is specific that disambiguation must not become a search.
+- **Partial** sets an amount less than the balance and leaves both sides in the
+  pool for the remainder.
+
+**Keyboard-first.** `a` accept, `r` reject, `m` re-match, `j`/`k` to move.
+Forty items should take two minutes.
+
+**Undo, always.** A toast with Undo after every action, plus a persistent
+*recent actions* list with undo on each row. Server state via
+`allocation_events`, so it survives a refresh — the moment it only works until
+reload is the moment it stops being trustworthy.
+
+**Empty state that means something:** *"Nothing to review. ₹2,10,000
+outstanding across 9 invoices, oldest 34 days."*
+
+### 2. Outstanding — who owes me
+
+Invoices with a balance, oldest first, with age and part-paid amounts. Grouped
+by normalised customer name. This is the question the business currently
+answers by scrolling WhatsApp for an hour, so it is the screen that justifies
+the product.
+
+### 3. Payments received
+
+Newest first, with **unapplied** ones pinned at the top — received money the
+ledger cannot explain. `pending` and `failed` screenshots appear here, clearly
+marked and never counted as received.
+
+### 4. Document detail
+
+Original image full-screen via signed URL, extracted fields beside it, the
+original message text, and the allocation history from
+`allocation_events` — who matched what, when, and what was undone. Every field
+editable; an edit re-runs matching.
+
+### 5. Settings
+
+WhatsApp groups the bot is in, and which owner each belongs to. Manual entry
+for **cash payments** and for invoices that never reached the group (§10).
+Sign-in is an email magic link: phone OTP needs an SMS provider and, in India,
+DLT registration — weeks of lead time for no P0 benefit.
+
+### A third state the design originally missed
+
+When extraction fails on a message that carried an image, the bot knows a
+document arrived but not which side of the ledger it belongs to. §6 said "store
+the document as needs_review with the image", which quietly assumed a document
+row exists — and filing a receipt as a receivable is worse than admitting
+ignorance. So an unread image is parked against its raw message
+(`raw_messages.needs_classification`, and a `document_files.raw_message_id`),
+listed in the review screen, and the owner says which it is in one tap. The
+30-day purge skips these, because for them the image is the only record.
+
+Without this, a Gemini outage would store photographs that nothing in the app
+ever references again, and "an image with no row is invisible to everyone" — the
+reason the pipeline is ordered the way it is — would have been false of the one
+case that most needed it to be true.
 
 ---
 
 ## 8. Security
 
-- **RLS on every table.** Every policy resolves to `owner_id = auth.uid()`.
+- **RLS on every table**, every policy resolving to `owner_id = auth.uid()`.
   The UI hides; the database refuses. A check that exists only in React is a
   convenience, not security.
-- **The bot uses the service-role key and therefore bypasses RLS**, so it must
-  scope every write by hand — it resolves `owner_id` from the group mapping and
-  never trusts anything in the message.
-- **Private bucket, signed URLs only**, 5-minute expiry, minted server-side
-  after an ownership check.
-- **Prompt injection is a real threat here.** The model reads text and images
-  from a group that anyone can post into. Treat its output as untrusted data:
-  validate against the schema, clamp the amount to a sane range, and never let
-  model output reach a shell, a query string, or an HTTP call. This is the
-  concrete reason §2.1 rejects an agent framework with tools.
-- **Secrets** (service-role key, Gemini key, R2 credentials) live in the VM's
-  environment, never in the web bundle.
+- **The bot uses the service-role key and bypasses RLS**, so it scopes every
+  write by hand — `owner_id` comes from the group mapping and nothing in the
+  message is ever trusted to say who owns a row.
+- **Cross-owner allocation must be impossible**, not merely unlikely: an
+  allocation whose invoice and payment belong to different owners is refused by
+  a constraint, and that is asserted in pgTAP. It is the one write in this
+  schema that touches two rows, and therefore the one worth attacking.
+- **The over-allocation invariants (§3) are a security control.** Their input
+  is model output derived from images anyone in the group can post. A prompt
+  that talks the model into a ₹10,00,000 payment still cannot settle more than
+  an invoice is worth.
+- **Prompt injection is a live threat**, which is the concrete reason §2.1
+  rejects an agent framework with tools. Validate against the schema, clamp
+  amounts, treat every string as data.
+- **Private bucket, signed URLs only**, 5 minutes, under the user's session.
+- **Secrets** (service-role key, Gemini key) live in the VM environment. Never
+  in a `NEXT_PUBLIC_*` variable, which ships to the browser.
 - **The WhatsApp session file is a credential.** Anyone who copies it reads
-  every group. Lock down the VM: key-only SSH, no password login, firewall
-  everything except SSH.
+  every group. Key-only SSH, no password login, firewall all but SSH.
+- **Third-party personal data.** This database holds the *customers'* names,
+  UPI handles and transaction references — collected by the business, which is
+  a data fiduciary for them. Consequences: a paid Gemini tier before the first
+  real customer (§2.3), the 30-day `raw_messages` purge actually running, and a
+  deletion path that reaches storage as well as rows.
 
 ---
 
 ## 9. Build plan
 
-Each milestone ends in something testable.
+Each milestone ends in something testable. The order is chosen so that the two
+questions that could invalidate the product are answered in weeks one and two.
 
 | # | Milestone | Test |
 |---|---|---|
-| 1 | Supabase project, schema, RLS policies, seeded categories | Two owners; prove owner A reads zero of B's rows through the REST API |
-| 2 | Baileys bot on the VM, logs group messages, writes `raw_messages` | Post in a test group; see the row. Kill the process; posts during downtime still arrive on restart |
-| 3 | Gemini call behind the schema, printing JSON only | Feed 20 real bills — printed, handwritten, Telugu. Measure accuracy before building anything on top |
-| 4 | R2 upload + thumbnails, files linked to expenses | Post a bill photo; original is byte-identical, thumbnail renders |
-| 5 | Full pipeline writing `expenses`, confidence gate | A day of real messages produces a correct ledger |
-| 6 | Next.js: sign-in, projects, expense list | Owner signs in and sees their expenses, nobody else's |
-| 7 | Expense detail with signed-URL viewer, edit, delete | Open a bill, correct a wrong amount |
-| 8 | Review queue | Deliberately post a blurry bill; it lands in review, not the ledger |
-| 9 | Group→project linking UI, category management | Link a new group end to end without touching the database |
+| 1 | Schema, RLS, invariants, seeded data | Two owners; A reads zero of B's rows through the REST API. Over-allocation and cross-owner allocation both refused |
+| 2 | Baileys bot ingesting to `raw_messages` | Post in a test group; see the row. Kill the process; posts during downtime arrive on restart |
+| 3 | Extraction measured, printing JSON only | **20 real UPI screenshots and 20 real invoices, scored separately.** Screenshots are rendered UI and should be near-perfect; handwritten invoices are the hard half. `txn_status` correct on a deliberately failed payment |
+| 4 | **Matcher in SQL, measured offline** | ~50 hand-labelled invoice/payment pairs from one real business. Report precision at the 0.90 auto-propose threshold and recall overall. **Go/no-go for the whole design** |
+| 5 | Pipeline end to end; proposals appear | A week of real messages produces proposals a human agrees with |
+| 6 | Web: sign-in, Outstanding, Payments | Owner signs in, sees their balances and nobody else's |
+| 7 | Review screen: one item, accept / reject | Work a real queue to zero |
+| 8 | Re-match shortlist + partial allocation | Two invoices at the same amount produce a shortlist, not a guess. An instalment leaves the right balance |
+| 9 | Bulk accept (RPC) + undo | Accept 12 at once; kill the connection mid-request and prove nothing is half-applied. Undo each one after a refresh |
+| 10 | Settings, manual cash entry, group linking | Record a cash payment against an invoice without touching the database |
 
-Milestone 3 is the one to do early and honestly. If Gemini cannot read
-handwritten Telugu bills at acceptable accuracy, the review queue becomes the
-main screen rather than the exception, and that changes the product. Find out
-in week one, not week six.
+**Milestone 4 is this document's milestone 3** — the honest-measurement gate.
+If precision at 0.90 is poor, auto-proposal is worthless and the product
+becomes a fast manual matching tool. That is still a viable product, and the
+review screen is most of it, but it is a different pitch and the threshold
+should move to reflect it. Find out in week two, not week eight.
 
 ---
 
 ## 10. Risks and open questions
 
-### Corrections to the brief
+### Corrections to the original brief, still standing
 
-1. **A Cloud API Groups API now exists** — but it is capped at 8 participants,
-   needs an Official Business Account, and only works in groups the business
-   creates. The conclusion (unofficial route for P0) stands; the reasoning
-   changes, and so does the migration story.
-2. **Vercel Hobby prohibits commercial use.** Cloudflare Pages instead, or
-   Vercel Pro at $20/month.
-3. **Oracle's ARM A1 reclaims idle instances** on exactly this workload
-   profile. Use the AMD micro shape, which is exempt.
-4. **OpenClaw is Baileys underneath**, so it carries identical ban risk while
-   adding an agent runtime. Not a trade-off between safety and convenience —
-   strictly more risk.
+1. **A Cloud API Groups API now exists** — 8 participants, Official Business
+   Account, own-created groups only. Conclusion unchanged, reasoning and
+   migration story changed.
+2. **Vercel Hobby prohibits commercial use.** Pages, or Vercel Pro at $20/mo.
+3. **Oracle's ARM A1 reclaims idle instances** on exactly this workload. AMD
+   micro is exempt.
+4. **OpenClaw is Baileys underneath** — identical ban risk plus an agent
+   runtime. Strictly more risk, not a trade-off.
 
 ### Ranked risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| WhatsApp bans the number | **High / likely eventually** | Dedicated SIM, low volume, human pacing. Plan for re-pairing. This is the one that can end the product |
-| Gemini free tier trains on customer bills | **High** | Paid tier before any real customer. Costs a few dollars |
-| Extraction accuracy on handwritten Telugu bills | **Medium-high** | Measure at milestone 3, before building on it |
-| Prompt injection via a posted image | Medium | No tools, no shell, schema validation, treat output as data |
-| Oracle reclaims or suspends the VM | Medium | AMD shape; keep `docker compose` + a restore script so a rebuild is an hour |
-| Storage runway | Low | R2 buys ~7 months; $0.75/month after |
+| **Name matching across scripts fails** | **High** | `similarity('రవి కుమార్', 'Ravi Kumar')` is **zero**. If invoices are handwritten in Telugu while UPI shows Latin names, the 0.30 name term contributes nothing and amount alone decides — which collides constantly on round numbers. Measure at milestone 4. If it fails, the answer is a better shortlist, not a cleverer matcher: transliteration is a research project, not a P0 feature |
+| WhatsApp bans the number | **High / likely eventually** | Dedicated SIM, low volume, human pacing, plan to re-pair. The one risk that can end the product |
+| Gemini free tier trains on customers' payment data | **High** | Paid tier before the first real customer. Now a DPDP exposure, not just a preference |
+| Same-amount collisions | **Medium-high** | Round amounts are the common case, so amount is weakest exactly where it is most used. Never auto-propose an ambiguous pair (§4) |
+| Partial payments are common | Medium-high | Every payment becomes a candidate partial of every larger invoice, and the candidate set explodes. Ask a real business before tuning the 10% floor |
+| Handwritten invoice extraction | Medium | Measured separately at milestone 3 |
+| Storage runway (three weeks) | Medium | Decide at 70% full: R2 plus a signing endpoint, or Supabase Pro |
+| Prompt injection via a posted image | Medium | No tools, no shell, schema validation, and the §3 invariants as the real defence |
+| Oracle reclaims the VM | Medium | AMD shape; keep `docker compose` and a restore script so a rebuild is an hour |
 
-### Open questions — defaults proposed, none blocking
+### Open questions — these need a real customer, and two of them are structural
 
-| Question | Default | Why |
+| Question | Why it matters | Proposed default |
 |---|---|---|
-| Reply in the group to confirm? | **React with ✅ on the message**, no text reply | Confirms capture without adding noise to a group that is also a workplace. A chatty bot gets muted, and a muted bot's errors go unnoticed. A text reply only when something lands in review |
-| One bill, many line items | **One expense, the grand total** | Matches how the owner thinks and how the bill is paid. Splitting is a P1 feature on the detail screen, and the original is retained so nothing is lost |
-| How to link a group to a project | **UI.** Bot lists groups it is in; owner assigns each | An in-group command means teaching syntax to people who did not install the bot, and anyone in the group could re-point it |
-| Whose messages count | **Everyone in the group** | A supervisor posting a bill is the main use case. An allowlist is a Settings toggle later if noise becomes a problem |
+| **Do invoices actually appear in the group?** | The PRD says they do. If they go out by email or a Tally print instead, one whole side of the ledger has no ingestion path and must be entered by hand — which contradicts "zero workflow change" | Assume yes; ship manual invoice entry in Settings as insurance (milestone 10) |
+| **How do cash payments get recorded?** | There is no screenshot, ever. A cash-settled invoice looks permanently outstanding, and for a South Indian small business this is not an edge case | Manual "mark paid — cash" on the invoice, written as a `payments` row with `method = 'cash'` so one ledger holds everything |
+| **Do payers put anything in the UPI note?** | If sometimes, invoice-number matching is a near-free decisive key and should be tried first. If never, amount plus name carries everything and the review queue is larger than the PRD assumes | Implement the reference check; it is cheap even at low hit rates |
+| **What is an invoice, physically?** | A Tally/Vyapar PDF, a photo of a handwritten bill book, or a WhatsApp text message. This changes extraction difficulty by an order of magnitude | Support all three; measure separately at milestone 3 |
+| **How often are payments partial?** | Drives both the candidate explosion and whether partial allocation is a P0 screen or a P1 one | Assume common; build partial in milestone 8 |
+| **One group per business, or one per customer?** | The PRD says one accounting group, which is why §3 drops `projects` and relies on names. One group per customer would make matching dramatically easier and is worth knowing before milestone 4 | Assume one group, many customers |
 
-### Questions I could not answer from the brief
+### Questions the PRD does not settle, neither blocking
 
-Neither blocks the design:
-
-- **What happens when an owner leaves a group, or the bot is removed?** The
-  expenses stay, but nothing further arrives, silently. Worth a warning in the
-  UI.
-- **Is one group ever shared across two projects?** Modelled as one-to-one. If
-  a contractor runs one group for two sites, this breaks and the fix is a
-  per-message project hint — considerably more complex. Worth asking a real
-  customer before building.
+- **Over-payment.** ₹51,000 against a ₹50,000 invoice is real. Modelled as a
+  payment with a permanent unapplied remainder — a credit — rather than forced
+  to zero. It will show in the unapplied list, which is correct but needs a
+  label so it does not read as an error.
+- **Should the bot reply in the group?** Default: react ✅ on a message it
+  captured, no text reply. A chatty bot in a group that is also a workplace
+  gets muted, and a muted bot's errors go unnoticed. A text reply only when
+  something needs a human.
+- **Whose messages count?** Everyone in the group — staff forwarding is the
+  entire use case. An allowlist is a Settings toggle if noise appears.
+- **What happens when the bot is removed from the group?** Nothing further
+  arrives, silently, and the balances quietly go stale. Worth a warning in the
+  UI when no message has been seen in N days.

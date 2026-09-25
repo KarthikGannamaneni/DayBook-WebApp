@@ -1,33 +1,106 @@
 :root {
   --bg: #fbfaf7; --surface: #fff; --border: #e5e1d8;
-  --text: #1a1a18; --muted: #5f5e5a; --accent: #1d7a56; --warn: #854f0b; --warn-bg: #faeeda;
+  --text: #1a1a18; --muted: #5f5e5a; --accent: #1d7a56;
+  --warn: #854f0b; --warn-bg: #faeeda;
+  --bad: #a32d2d; --bad-bg: #fbe9e9;
+  --ok: #1d7a56; --ok-bg: #e4f2ec;
   --radius: 10px;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #161513; --surface: #201f1c; --border: #33312c;
-    --text: #f2f0ea; --muted: #a8a59d; --accent: #5dcaa5; --warn: #fac775; --warn-bg: #3a2c12; }
+    --text: #f2f0ea; --muted: #a8a59d; --accent: #5dcaa5;
+    --warn: #fac775; --warn-bg: #3a2c12;
+    --bad: #f3a39a; --bad-bg: #3a1a18;
+    --ok: #5dcaa5; --ok-bg: #12312a; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
   font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+main { max-width: 860px; margin: 0 auto; padding: 20px 16px 80px; }
 a { color: inherit; }
 h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
-h2 { font-size: 15px; font-weight: 500; color: var(--muted); margin: 28px 0 10px; }
+h2 { font-size: 15px; font-weight: 600; margin: 32px 0 10px; }
+h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; color: var(--muted); }
 .muted { color: var(--muted); font-size: 14px; }
+.tiny { font-size: 12px; color: var(--muted); }
+
 .card { background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 16px; display: block; text-decoration: none; }
+  border-radius: var(--radius); padding: 14px 16px; display: block;
+  text-decoration: none; }
 .card + .card { margin-top: 10px; }
+.card.focused { border-color: var(--accent); box-shadow: 0 0 0 2px var(--ok-bg); }
 .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .amount { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+
+/* The counts header. "State always visible" is a requirement, not a nicety:
+   a weekly session needs a clear sense of done. */
+.counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0 8px; }
+.counts .stat { background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 12px; }
+.counts .stat .k { font-size: 12px; color: var(--muted); display: block; }
+.counts .stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) { .counts { grid-template-columns: 1fr 1fr; } }
+
+/* One proposal at a time: the payment and the invoice beside each other, so
+   the comparison is a glance rather than a memory test. */
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+@media (max-width: 640px) { .pair { grid-template-columns: 1fr; } }
+.side { border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px; background: var(--bg); }
+.side dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 14px; }
+.side dt { color: var(--muted); }
+.side dd { margin: 0; overflow-wrap: anywhere; }
+
+.thumb { display: block; width: 100%; max-height: 220px; object-fit: contain;
+  border-radius: 6px; background: var(--border); margin-bottom: 10px; }
+.thumb.full { max-height: none; }
+
 .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px;
-  background: var(--warn-bg); color: var(--warn); }
+  background: var(--warn-bg); color: var(--warn); white-space: nowrap; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.score { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.reasons { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+.reasons li::before { content: '· '; }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
 .btn { display: inline-block; background: var(--accent); color: #fff; border: 0;
-  border-radius: var(--radius); padding: 11px 18px; font: inherit; font-size: 15px;
+  border-radius: var(--radius); padding: 10px 16px; font: inherit; font-size: 15px;
   cursor: pointer; text-decoration: none; }
+.btn:disabled { opacity: .5; cursor: default; }
 .btn.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
-input, select { font: inherit; padding: 10px 12px; border-radius: var(--radius);
+.btn.danger { background: transparent; color: var(--bad); border: 1px solid var(--border); }
+.btn.small { padding: 6px 10px; font-size: 13px; }
+
+kbd { font: inherit; font-size: 11px; border: 1px solid var(--border);
+  border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted); }
+
+input, select, textarea { font: inherit; padding: 10px 12px; border-radius: var(--radius);
   border: 1px solid var(--border); background: var(--surface); color: var(--text); width: 100%; }
 label { font-size: 14px; color: var(--muted); display: block; margin-bottom: 6px; }
-nav.top { display: flex; gap: 16px; font-size: 14px; margin-bottom: 20px; }
+.field + .field { margin-top: 10px; }
 form.inline { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+form.inline .field { flex: 1 1 140px; margin-top: 0; }
+
+nav.top { display: flex; gap: 14px; font-size: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+nav.top a { text-decoration: none; color: var(--muted); }
+nav.top a.here { color: var(--text); font-weight: 600; }
+
+/* Undo has to survive a refresh, so it is server state — but it still needs to
+   be within reach the moment after a mistake. */
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 20px;
+  background: var(--text); color: var(--bg); padding: 10px 14px; border-radius: 999px;
+  display: flex; gap: 12px; align-items: center; font-size: 14px; z-index: 10;
+  box-shadow: 0 6px 24px rgba(0,0,0,.2); max-width: calc(100% - 32px); }
+.toast button { background: none; border: 0; color: inherit; font: inherit;
+  font-weight: 600; text-decoration: underline; cursor: pointer; padding: 0; }
+
+.empty { border: 1px dashed var(--border); border-radius: var(--radius);
+  padding: 24px 16px; text-align: center; }
+.banner { background: var(--ok-bg); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 14px; margin: 12px 0;
+  display: flex; justify-content: space-between; gap: 12px; align-items: center;
+  flex-wrap: wrap; }
+.err { color: var(--bad); font-size: 14px; }
+hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }

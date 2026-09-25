@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Expense capture',
-  description: 'Expenses captured from WhatsApp, one project at a time.',
+  title: 'DayBook',
+  description: 'Payments matched to invoices, straight out of WhatsApp.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
