@@ -11,7 +11,6 @@
     "smoke": "tsx src/smoke.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.699.0",
     "@google/genai": "0.14.0",
     "@supabase/supabase-js": "2.45.4",
     "baileys": "6.7.9",

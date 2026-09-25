@@ -1,7 +1,7 @@
 import { BaileysSource } from './sources/baileys.ts';
 import { GeminiExtractor } from './extract/gemini.ts';
 import { SupabaseStore } from './store/supabase.ts';
-import { R2FileStore } from './store/r2.ts';
+import { SupabaseFileStore } from './store/supabase-files.ts';
 import { DEFAULT_CONFIG, handleMessage } from './pipeline.ts';
 
 /**
@@ -19,7 +19,7 @@ const MIN_CALL_SPACING_MS = 4_000;
 
 async function main(): Promise<void> {
   const store = SupabaseStore.fromEnv();
-  const files = R2FileStore.fromEnv();
+  const files = SupabaseFileStore.fromEnv();
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY is required');

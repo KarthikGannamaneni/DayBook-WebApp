@@ -1,0 +1,74 @@
+name: Deploy to GitHub Pages
+
+# The web app is a static export: client components talking to Supabase with
+# the anon key, and row-level security doing the deciding. There is no server
+# to deploy, which is the whole point.
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', '.github/workflows/pages.yml', 'pnpm-lock.yaml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Refuse to publish a build that cannot reach a backend
+        env:
+          URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          # Both are public values that ship to the browser anyway, so they are
+          # repository variables rather than secrets. Without them the site
+          # builds perfectly and then does nothing, which is a worse failure
+          # than not deploying.
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then
+            echo "Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY" >&2
+            echo "under Settings > Secrets and variables > Actions > Variables." >&2
+            exit 1
+          fi
+
+      - name: Build
+        env:
+          GITHUB_PAGES: '1'
+          NEXT_PUBLIC_BASE_PATH: /DayBook-WebApp
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: pnpm --filter web build
+
+      # Pages serves the artifact as-is and would otherwise run Jekyll over it,
+      # which strips directories beginning with an underscore — including
+      # _next, so every script and stylesheet would 404.
+      - run: touch web/out/.nojekyll
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: web/out }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

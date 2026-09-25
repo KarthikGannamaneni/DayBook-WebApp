@@ -1,7 +1,7 @@
 'use client';
 
-import { createBrowserClient } from '@supabase/ssr';
 import { useState } from 'react';
+import { supabase } from '@/lib/client';
 
 /**
  * Email magic link. Phone OTP needs an SMS provider and, in India, DLT
@@ -23,13 +23,12 @@ export default function SignIn() {
     setBusy(true);
     setError(null);
 
-    const supabase = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    );
-    const { error: authError } = await supabase.auth.signInWithOtp({
+    // The redirect must include the basePath: a GitHub project site lives at
+    // /DayBook-WebApp/, not at the domain root.
+    const base = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+    const { error: authError } = await supabase().auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+      options: { emailRedirectTo: `${window.location.origin}${base}/auth/callback/` },
     });
 
     setBusy(false);

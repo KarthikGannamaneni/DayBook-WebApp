@@ -114,14 +114,47 @@ unsolicited messages, and accept that re-pairing after a ban means a new
 number and re-adding the bot to every group. Treat the number as disposable
 and the session as something you will re-establish, not as infrastructure.
 
+### 2.4 Hosting: GitHub Pages, and what it costs
+
+Changed on 2026-09-25, after the P0 build. The brief's priority was **zero
+hosting dependencies long-term**, and GitHub Pages delivers that better than
+anything else here: the repository already exists, there is no second account,
+no plan that can change under you, and no commercial-use clause to outgrow.
+
+Pages runs no server, so the web app is a static export — every screen is a
+client component talking to Supabase with the anon key, and row-level security
+is what decides what comes back. That is not a weakening: the anon key grants
+nothing on its own, and the 15 pgTAP assertions are the proof.
+
+Three consequences, none of them free:
+
+**File storage moved from R2 to Supabase Storage.** This is the one that forced
+itself. R2 presigning needs a secret, and a browser cannot hold one. Supabase
+mints a signed URL under the user's own session, so the server disappears —
+at the cost of the runway §5 argued for: **1 GB instead of 10 GB, roughly
+three weeks instead of seven months** at the expected volume. Revisit when the
+bucket fills; the `FileStore` port means it is one adapter, and the R2 one is
+in git history.
+
+**Dynamic segments became query parameters.** `/projects/[id]` cannot be
+prerendered without knowing every uuid in advance, so it is `/project/?id=…`,
+read in the browser.
+
+**Server actions became direct Supabase calls.** Same authorization either way
+— it was always RLS doing the work — but the mutation now happens in the
+client.
+
+What Pages does not solve: the app still needs a **cloud Supabase project**.
+A static site cannot reach `127.0.0.1`, and no choice of host changes that.
+
 ### 2.3 Everything else
 
 | Component | Choice | Free tier | Risk / note |
 |---|---|---|---|
 | Bot host | **Oracle Always Free, AMD micro** (`VM.Standard.E2.1.Micro`) | 2 instances, 1/8 OCPU, 1 GB RAM each, always on | See below — deliberately *not* ARM |
 | DB + Auth | **Supabase** | 500 MB DB, 50k MAU, 2 projects | Pauses after 7 days idle — the bot's own writes prevent this |
-| File storage | **Cloudflare R2** | **10 GB**, no egress fees | 10× Supabase Storage; see §5 for why that decides it |
-| Web app | **Cloudflare Pages** | Commercial use allowed | **Not Vercel** — see below |
+| File storage | **Supabase Storage** | 1 GB | Was R2; forced by the hosting change — see §2.4 |
+| Web app | **GitHub Pages** (static export) | Free, no account beyond GitHub | Changed 2026-09-25 — see §2.4 |
 | Extraction | **Gemini 2.5 Flash** | 15 RPM, 1,500 req/day | **Free tier trains on your data** — see below |
 
 **Why AMD micro and not the ARM A1 the brief suggests.** Oracle reclaims idle

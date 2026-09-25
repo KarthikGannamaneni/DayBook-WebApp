@@ -9,8 +9,6 @@
     "test": "echo \"no unit tests yet\" && exit 0"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.699.0",
-    "@aws-sdk/s3-request-presigner": "3.699.0",
     "@supabase/ssr": "0.5.1",
     "@supabase/supabase-js": "2.45.4",
     "next": "15.5.25",
