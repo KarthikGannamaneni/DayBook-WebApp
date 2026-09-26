@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke": "tsx --env-file-if-exists=.env src/smoke.ts",
-    "groups": "tsx --env-file-if-exists=.env src/groups.ts"
+    "groups": "tsx --env-file-if-exists=.env src/groups.ts",
+    "purge": "tsx --env-file-if-exists=.env src/purge.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.45.4",

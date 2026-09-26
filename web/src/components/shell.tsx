@@ -27,6 +27,7 @@ export function Protected({ children }: { children: ReactNode }) {
 const LINKS = [
   { href: '/', label: 'Review' },
   { href: '/outstanding', label: 'Outstanding' },
+  { href: '/summary', label: 'Cash flow' },
   { href: '/payments', label: 'Payments' },
   { href: '/settings', label: 'Settings' },
 ];

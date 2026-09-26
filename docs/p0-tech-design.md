@@ -506,6 +506,20 @@ bill. A 400px WebP thumbnail (~20 KB) is generated on ingest with `sharp`,
 because the review screen shows two images at once and a weekly session over a
 phone connection cannot fetch 600 KB per item.
 
+**Retention.** Originals are deleted **90 days** after capture; the structured
+record is kept indefinitely. `document_files` keeps its row with `purged_at` set,
+so the app says "the original was deleted on 3 March" rather than showing a broken
+image and letting the owner conclude the system lost their bill.
+
+The deletion runs from the bot (`pnpm --filter bot purge`), not from Postgres,
+because removing a stored object needs the Storage API and SQL cannot reach it.
+The database decides *what* has expired (`v_purgeable_files`); the job only
+carries it out, and a failed delete leaves the batch for the next run rather than
+marking an object purged while it still exists. Schedule it daily.
+
+This also buys runway back: at the volumes below, 90 days of images is roughly
+what the free tier holds.
+
 **Runway.** At ~150 documents/day and ~300 KB each, plus thumbnails, Supabase's
 1 GB gives roughly **three weeks**. That is the cost of the Pages decision
 (§2.4) and it will force a move mid-pilot. The `FileStore` port means R2 is one
@@ -537,7 +551,7 @@ eventually anyway. Decide when the bucket is at 70%, not when it is full.
 ## 7. Owner view — the review experience is the product
 
 The PRD is explicit that this is where the product is won or lost, so it is
-specified in more detail than anything else here. Five screens; review is the
+specified in more detail than anything else here. Six screens; review is the
 first, not the fifth.
 
 ### 1. Review — the weekly session
@@ -587,7 +601,25 @@ is the difference between a two-minute session and a two-hour one.
 - **Partial** sets an amount less than the balance and leaves both sides in the
   pool for the remainder.
 
-**Keyboard-first.** `a` accept, `r` reject, `m` re-match, `j`/`k` to move.
+**A queue, not a list.** This is the part most easily got wrong, so it is
+specified rather than left to taste. Three layers, cheapest first:
+
+1. **Arrow keys and prev/next buttons** — the everyday path. `←` `→` to move,
+   `Enter` to confirm, `Backspace` to reject (this screen claims it back from the
+   browser's back gesture), `m` to re-match.
+2. **A filmstrip of the few items either side**, to step sideways without leaving
+   the card. A window, not an index — showing all 46 would make it the list this
+   product exists to replace.
+3. **A filter rail of broad buckets** — Needs review / Unmatched / Could not read
+   — to land in the right group to begin with.
+
+There is deliberately **no search box and no "all items" table** on the everyday
+path. Having to find a row before you can act on it is the spreadsheet workflow
+with extra steps.
+
+**Position without browsing:** "Reviewing 12 of 46" and a thin progress bar. A
+weekly session needs to know how much is left without opening anything.
+
 Forty items should take two minutes.
 
 **Undo, always.** A toast with Undo after every action, plus a persistent
@@ -605,20 +637,36 @@ by normalised customer name. This is the question the business currently
 answers by scrolling WhatsApp for an hour, so it is the screen that justifies
 the product.
 
-### 3. Payments received
+### 3. Cash flow
+
+Twelve weeks of invoiced against collected, the running outstanding total, and a
+"needs attention" list led by unmatched payments and then by the oldest
+receivable. The requirement calls budgeting "a side benefit of data the business
+was already producing", and that is literally what this is: a view over rows
+that already exist, with no second pipeline behind it.
+
+Collected is counted by the date money **arrived**, not the date it was matched.
+Reconciliation is bookkeeping; the cash landed when it landed.
+
+Empty weeks are drawn as zeroes rather than skipped, because a chart that
+silently drops quiet weeks makes a slow month look like a busy one — the opposite
+of what somebody checking their cash position needs. The bars are inline divs:
+twelve pairs do not justify a charting library on a phone connection.
+
+### 4. Payments received
 
 Newest first, with **unapplied** ones pinned at the top — received money the
 ledger cannot explain. `pending` and `failed` screenshots appear here, clearly
 marked and never counted as received.
 
-### 4. Document detail
+### 5. Document detail
 
 Original image full-screen via signed URL, extracted fields beside it, the
 original message text, and the allocation history from
 `allocation_events` — who matched what, when, and what was undone. Every field
 editable; an edit re-runs matching.
 
-### 5. Settings
+### 6. Settings
 
 WhatsApp groups the bot is in, and which owner each belongs to. The ids come
 from `pnpm --filter bot groups`, which connects, prints every group the paired
@@ -675,8 +723,10 @@ case that most needed it to be true.
 - **Third-party personal data.** This database holds the *customers'* names,
   UPI handles and transaction references — collected by the business, which is
   a data fiduciary for them. Consequences: a paid Gemini tier before the first
-  real customer (§2.3), the 30-day `raw_messages` purge actually running, and a
-  deletion path that reaches storage as well as rows.
+  real customer (§2.3), and retention that actually runs — 30 days for raw
+  messages, 90 for images, both in `pnpm --filter bot purge`, which reaches
+  storage as well as rows (§5). A retention policy nothing executes is not a
+  policy, and that is what this was until it was written.
 
 ---
 

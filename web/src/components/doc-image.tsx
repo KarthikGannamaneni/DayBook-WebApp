@@ -14,13 +14,15 @@ import { signedUrl } from '@/lib/client';
  * reading a smudged figure.
  */
 export function DocImage({
-  storagePath, thumbnailPath, mimeType, alt, full = false,
+  storagePath, thumbnailPath, mimeType, alt, full = false, purgedAt = null,
 }: {
   storagePath: string | null;
   thumbnailPath?: string | null;
   mimeType?: string | null;
   alt: string;
   full?: boolean;
+  /** Retention deleted the original. Say so, rather than failing to load it. */
+  purgedAt?: string | null;
 }) {
   const wanted = full ? storagePath : (thumbnailPath ?? storagePath);
   const [url, setUrl] = useState<string | null>(null);
@@ -37,6 +39,14 @@ export function DocImage({
     return () => { live = false; };
   }, [wanted]);
 
+  if (purgedAt) {
+    return (
+      <p className="tiny" style={{ margin: '0 0 10px' }}>
+        The original was deleted on {new Date(purgedAt).toLocaleDateString('en-IN')} under the
+        retention policy. The amounts and dates below are kept.
+      </p>
+    );
+  }
   if (!wanted) return null;
   if (failed) return <p className="tiny">The image could not be loaded.</p>;
   if (!url) return <div className={full ? 'thumb full' : 'thumb'} aria-hidden />;

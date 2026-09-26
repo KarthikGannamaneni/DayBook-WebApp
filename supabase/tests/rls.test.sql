@@ -13,7 +13,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 \ir harness/harness.psql
 
-select plan(29);
+select plan(34);
 
 -- Two owners.
 select tests.make_user('a0000000-0000-4000-8000-000000000001', 'a@test.local');
@@ -224,6 +224,42 @@ select throws_ok(
   '23505', null,
   'one pair has at most one live allocation'
 );
+
+-- ---------------------------------------------------------------------------
+-- Retention. These are photographs of other people's payments, and "kept
+-- forever because nobody wrote the job" is not a policy.
+-- ---------------------------------------------------------------------------
+select tests.as_service();
+
+select is((select count(*)::int from public.v_purgeable_files), 0,
+  'a fresh image is not purgeable — 90 days by default, not immediately');
+
+update public.document_files set purge_after = current_date - 1
+ where owner_id = 'a0000000-0000-4000-8000-000000000001';
+
+select is((select count(*)::int from public.v_purgeable_files), 1,
+  'and becomes purgeable once its date passes');
+
+select is(public.mark_files_purged(
+  array(select id from public.document_files
+         where owner_id = 'a0000000-0000-4000-8000-000000000001')), 1,
+  'the purge job can mark an image gone');
+
+-- The structured record has to outlive the image: "what did Ravi pay in March"
+-- must still have an answer next year.
+select is((select count(*)::int from public.document_files
+           where owner_id = 'a0000000-0000-4000-8000-000000000001'), 1,
+  'the row survives the image, so the app can say when it was deleted rather than showing a broken picture');
+
+-- ---------------------------------------------------------------------------
+-- And the cash-flow series is not a way around row-level security either.
+-- ---------------------------------------------------------------------------
+select tests.authenticate_as('b0000000-0000-4000-8000-000000000002');
+
+select is((select sum(invoiced_minor)::bigint from public.v_cash_flow_weeks),
+          (select amount_minor from public.invoices
+            where owner_id = 'b0000000-0000-4000-8000-000000000002'),
+  'the cash-flow view totals only the caller''s own invoices');
 
 select * from finish();
 rollback;

@@ -2,8 +2,9 @@
 
 import { supabase } from './client';
 import type {
-  Candidate, Counts, CustomerBalance, DecisionEvent, DocKind, DocumentFile,
-  GroupRow, InvoiceRow, PaymentRow, Proposal, UnclassifiedRow, UnreadableRow,
+  Candidate, CashFlowWeek, Counts, CustomerBalance, DecisionEvent, DocKind,
+  DocumentFile, GroupRow, InvoiceRow, PaymentRow, Proposal, UnclassifiedRow,
+  UnreadableRow,
 } from './types';
 
 /**
@@ -110,7 +111,7 @@ export async function getPayment(id: string): Promise<PaymentRow | null> {
 export async function listFiles(kind: DocKind, id: string): Promise<DocumentFile[]> {
   const { data, error } = await supabase()
     .from('document_files')
-    .select('id, storage_path, thumbnail_path, mime_type')
+    .select('id, storage_path, thumbnail_path, mime_type, purged_at, purge_after')
     .eq(kind === 'invoice' ? 'invoice_id' : 'payment_id', id);
   if (error) throw new Error(error.message);
   return rows<DocumentFile>(data);
@@ -132,6 +133,17 @@ export async function listRecentDecisions(limit = 12): Promise<DecisionEvent[]> 
     .limit(limit);
   if (error) throw new Error(error.message);
   return rows<DecisionEvent>(data);
+}
+
+/** Twelve weeks of invoiced vs collected. The budgeting view the PRD calls a
+ *  side benefit of data the business was already producing. */
+export async function listCashFlowWeeks(): Promise<CashFlowWeek[]> {
+  const { data, error } = await supabase()
+    .from('v_cash_flow_weeks')
+    .select('*')
+    .order('week_start', { ascending: true });
+  if (error) throw new Error(error.message);
+  return rows<CashFlowWeek>(data);
 }
 
 export async function listGroups(): Promise<GroupRow[]> {

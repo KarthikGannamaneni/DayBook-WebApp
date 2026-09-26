@@ -23,7 +23,7 @@ several were arrived at by getting it wrong first.
 | Path | What |
 |---|---|
 | `bot/` | Always-on Node process: WhatsApp → classify + extract → invoice or payment → ask the matcher. All the decisions live in `src/pipeline.ts` |
-| `web/` | Next.js owner app: the review session, outstanding balances, payments |
+| `web/` | Next.js owner app: the review session, outstanding balances, cash flow, payments |
 | `supabase/` | Schema, the matcher, row-level security, and the tests that prove all three |
 
 The matcher is **SQL, not TypeScript** (`match_candidates` in the migration).
@@ -46,7 +46,14 @@ WhatsApp pairing or a Gemini key to exercise the whole path:
 
 ```bash
 pnpm --filter bot smoke   # real pipeline, real database, stub extractor
+pnpm --filter bot groups  # the WhatsApp groups the paired number can see
+pnpm --filter bot purge --dry-run   # what retention would delete
 ```
+
+**Schedule the purge.** Originals are deleted 90 days after capture and raw
+messages after 30; `pnpm --filter bot purge` is what does it, and nothing calls it
+for you. Until it is on a daily timer, retention is a comment rather than a
+policy.
 
 The smoke run posts an invoice, a matching payment and a line of chatter. If it
 ends with one proposal in the review queue, everything works. It needs a linked

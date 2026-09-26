@@ -104,3 +104,40 @@ nav.top a.here { color: var(--text); font-weight: 600; }
   flex-wrap: wrap; }
 .err { color: var(--bad); font-size: 14px; }
 hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
+
+/* Review layout: a filter rail beside the queue. Buckets to land in the right
+   group, never a searchable list to hunt through. */
+.layout { display: grid; grid-template-columns: 190px 1fr; gap: 18px; margin-top: 14px; }
+@media (max-width: 720px) { .layout { grid-template-columns: 1fr; } }
+.rail { display: flex; flex-direction: column; gap: 4px; }
+@media (max-width: 720px) { .rail { flex-direction: row; overflow-x: auto; padding-bottom: 4px; } }
+.rail button { display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+  background: none; border: 0; border-radius: 8px; padding: 8px 10px; font: inherit;
+  font-size: 14px; color: var(--muted); cursor: pointer; text-align: left; white-space: nowrap; }
+.rail button.on { background: var(--surface); border: 1px solid var(--border); color: var(--text); font-weight: 600; }
+.rail button .n { font-variant-numeric: tabular-nums; }
+
+/* "Reviewing 12 of 46" — position without needing to browse. */
+.progress { display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-bottom: 12px; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+
+/* Nearby items only — context to step sideways, not the whole queue. */
+.filmstrip { display: flex; gap: 6px; overflow-x: auto; margin-top: 12px; padding-bottom: 4px; }
+.filmstrip button { flex: 0 0 auto; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 12px; color: var(--muted);
+  cursor: pointer; font-variant-numeric: tabular-nums; }
+.filmstrip button.on { border-color: var(--accent); color: var(--text); font-weight: 600; }
+
+/* Cash flow: one bar pair per week, no chart library. */
+.chart { display: flex; align-items: flex-end; gap: 6px; height: 140px; margin: 14px 0 6px; }
+.chart .wk { flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
+  align-items: center; gap: 2px; height: 100%; }
+.chart .pair { display: flex; align-items: flex-end; gap: 2px; width: 100%; height: 100%; justify-content: center; }
+.chart .pair i { display: block; width: 40%; min-height: 1px; border-radius: 2px 2px 0 0; }
+.chart .pair i.inv { background: var(--border); }
+.chart .pair i.got { background: var(--accent); }
+.chart .wk span { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }

@@ -128,6 +128,16 @@ export interface DocumentFile {
   storage_path: string;
   thumbnail_path: string | null;
   mime_type: string;
+  /** Set once retention has deleted the original. The row outlives the image. */
+  purged_at: string | null;
+  purge_after: string;
+}
+
+export interface CashFlowWeek {
+  week_start: string;
+  week_end: string;
+  invoiced_minor: Minor;
+  collected_minor: Minor;
 }
 
 export interface DecisionEvent {
