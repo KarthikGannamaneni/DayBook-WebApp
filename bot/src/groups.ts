@@ -1,6 +1,5 @@
-import {
-  Browsers, DisconnectReason, makeWASocket, useMultiFileAuthState,
-} from 'baileys';
+import { DisconnectReason } from 'baileys';
+import { openSocket } from './sources/socket.ts';
 
 /**
  * Lists the WhatsApp groups this number is in, with their ids.
@@ -21,18 +20,15 @@ import {
  * First run prints a QR code. Scanning it writes BAILEYS_AUTH_DIR, which IS a
  * credential: anyone who copies that directory reads every group this number is
  * in.
+ *
+ * A 405 on connect means the announced WhatsApp Web version was rejected; see
+ * sources/socket.ts.
  */
 
 const authDir = process.env.BAILEYS_AUTH_DIR ?? './auth_state';
 
 async function main(): Promise<void> {
-  const { state, saveCreds } = await useMultiFileAuthState(authDir);
-  const socket = makeWASocket({
-    auth: state,
-    browser: Browsers.ubuntu('Chrome'),
-    printQRInTerminal: true,
-  });
-
+  const { socket, saveCreds } = await openSocket(authDir);
   socket.ev.on('creds.update', saveCreds);
 
   await new Promise<void>((resolve, reject) => {

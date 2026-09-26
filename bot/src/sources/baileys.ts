@@ -1,7 +1,5 @@
-import {
-  Browsers, DisconnectReason, downloadMediaMessage,
-  makeWASocket, useMultiFileAuthState, type WASocket,
-} from 'baileys';
+import { DisconnectReason, downloadMediaMessage, type WASocket } from 'baileys';
+import { openSocket } from './socket.ts';
 import type { IncomingMessage, MessageHandler, MessageSource } from './types.ts';
 
 /**
@@ -24,8 +22,7 @@ export class BaileysSource implements MessageSource {
   constructor(private readonly authDir = './auth_state') {}
 
   async start(onMessage: MessageHandler): Promise<void> {
-    const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
-    const socket = makeWASocket({ auth: state, browser: Browsers.ubuntu('Chrome'), printQRInTerminal: true });
+    const { socket, saveCreds } = await openSocket(this.authDir);
     this.socket = socket;
 
     socket.ev.on('creds.update', saveCreds);

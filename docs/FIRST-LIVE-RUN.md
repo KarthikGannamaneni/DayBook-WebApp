@@ -47,6 +47,15 @@ First run prints a QR code — scan it from WhatsApp → Linked devices. That wr
 `bot/auth_state/`, which **is a credential**: anyone who copies that directory
 reads every group this number is in. It is gitignored; keep it that way.
 
+If it dies with **`connection closed (405)`** before showing a QR code, the
+announced WhatsApp Web version was rejected. The socket now looks the current
+version up at runtime (`bot/src/sources/socket.ts`), so this should not recur —
+but if it does, `pnpm --filter bot add baileys@legacy` and try once more.
+
+**Do not retry a failed pairing in a loop.** Repeated failed registrations from
+one number is exactly the pattern that gets it flagged, and a banned number is
+the one failure here that has no workaround.
+
 The command prints each group's name, id and member count, then exits. Copy the
 accounting group's id into **Settings → WhatsApp groups** in the web app. Do it
 there rather than in SQL: the row has to be scoped to your `auth.uid()`, and the
