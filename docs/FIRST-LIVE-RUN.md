@@ -57,9 +57,20 @@ announced WhatsApp Web version was rejected. The socket now looks the current
 version up at runtime (`bot/src/sources/socket.ts`), so this should not recur —
 but if it does, `pnpm --filter bot add baileys@legacy` and try once more.
 
+If it dies with **`401` / `device_removed`**, the phone no longer lists this
+device. Check WhatsApp → Settings → Linked devices:
+
+- **No device listed** — the link is gone. `rm -rf bot/auth_state` and pair once
+  more. An exit before the 515 reconnect can leave a device half-registered,
+  which the phone then drops; that is why the restart is handled rather than
+  treated as an error.
+- **A device IS listed** — something else is using those credentials. Stop the
+  other process; do not re-pair.
+
 **Do not retry a failed pairing in a loop.** Repeated failed registrations from
 one number is exactly the pattern that gets it flagged, and a banned number is
-the one failure here that has no workaround.
+the one failure here that has no workaround. Two attempts, then stop and work out
+why.
 
 The command prints each group's name, id and member count, then exits. Copy the
 accounting group's id into **Settings → WhatsApp groups** in the web app. Do it

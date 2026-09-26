@@ -30,6 +30,12 @@ import { openSocket } from './sources/socket.ts';
  *    successful pairing look like a failure.
  *  - **405 before any QR appears.** The announced client version was rejected.
  *    See sources/socket.ts, which looks the current one up at runtime.
+ *
+ * A **401 with `conflict type="device_removed"`** is different: the phone no
+ * longer lists this device. Exiting instead of honouring the 515 above appears to
+ * leave a device half-registered, and the phone then drops it — so the fix for
+ * that was the restart handling, and the credentials from any such attempt are
+ * dead and must be deleted.
  */
 
 const authDir = process.env.BAILEYS_AUTH_DIR ?? './auth_state';
@@ -57,7 +63,18 @@ async function attempt(): Promise<GroupRow[] | 'restart'> {
           if (status === DisconnectReason.restartRequired) {
             resolve('restart');
           } else if (status === DisconnectReason.loggedOut) {
-            reject(new Error(`logged out — delete ${authDir} and pair again`));
+            // 401 covers two different situations that need different responses,
+            // and the phone is the only place to tell them apart.
+            reject(new Error(
+              `this device is no longer linked (401).\n\n` +
+              `  Check WhatsApp on the phone: Settings > Linked devices.\n` +
+              `    - No device listed: the link was removed. Delete ${authDir}\n` +
+              `      and pair ONCE more.\n` +
+              `    - A device IS listed: something else is using these credentials.\n` +
+              `      Stop the other process rather than re-pairing.\n\n` +
+              `  Do NOT re-pair repeatedly. Repeated registrations from one number\n` +
+              `  is the pattern that gets it banned, and a ban has no workaround.`,
+            ));
           } else {
             reject(new Error(`connection closed (${status ?? 'unknown'})`));
           }
