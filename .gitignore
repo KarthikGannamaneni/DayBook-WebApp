@@ -11,3 +11,6 @@ supabase/.temp/
 
 # TypeScript incremental build state — machine-local, never reviewable.
 *.tsbuildinfo
+
+# The single-instance lock lives beside the auth directory.
+bot/auth_state.lock

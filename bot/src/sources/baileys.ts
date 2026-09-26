@@ -14,10 +14,24 @@ import type { IncomingMessage, MessageHandler, MessageSource } from './types.ts'
  * The auth state on disk IS a credential: anyone who copies it reads every
  * group this number is in.
  */
+/** 1s, 2s, 4s … capped. A conflict retried instantly is a reconnect storm. */
+const BASE_BACKOFF_MS = 1_000;
+const MAX_BACKOFF_MS = 30_000;
+/** Consecutive `replaced` conflicts before concluding somebody else owns it. */
+const MAX_CONFLICTS = 3;
+
+function isReplaced(error: unknown): boolean {
+  // Baileys surfaces the stream error's content on the Boom error's message.
+  return /replaced|conflict/i.test(String((error as Error | undefined)?.message ?? ''));
+}
+
 export class BaileysSource implements MessageSource {
   readonly name = 'baileys';
   private socket: WASocket | null = null;
   private stopped = false;
+  private attempts = 0;
+  private conflicts = 0;
+  private reconnecting = false;
 
   /**
    * @param includeOwnMessages Process messages sent BY the paired account.
@@ -44,8 +58,29 @@ export class BaileysSource implements MessageSource {
 
     socket.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect } = update;
+      if (connection === 'open') {
+        // A connection that actually opened resets the penalty.
+        this.attempts = 0;
+        this.conflicts = 0;
+      }
+
       if (connection === 'close') {
         const status = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
+        const replaced = isReplaced(lastDisconnect?.error);
+
+        if (replaced) {
+          this.conflicts += 1;
+          if (this.conflicts >= MAX_CONFLICTS) {
+            console.error(
+              `[baileys] this session was taken over ${this.conflicts} times in a row.\n` +
+              '  Something else is using it — another copy of the bot, or WhatsApp Web\n' +
+              '  in a browser. Reconnecting again would just continue the fight, so\n' +
+              '  stopping. Close the other client and start again.',
+            );
+            this.stopped = true;
+            return;
+          }
+        }
 
         // Logged out is terminal: the session is dead and no amount of
         // retrying revives it. Crash-looping here would hide the one failure
@@ -54,9 +89,19 @@ export class BaileysSource implements MessageSource {
           console.error('[baileys] logged out — re-pair with a QR code. Not retrying.');
           return;
         }
-        if (!this.stopped) {
-          console.warn('[baileys] connection closed, reconnecting');
-          void this.start(onMessage);
+        if (!this.stopped && !this.reconnecting) {
+          this.reconnecting = true;
+          const delay = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** this.attempts);
+          // Jitter, so two clients that collide do not keep colliding in step.
+          const wait = Math.round(delay * (0.5 + Math.random()));
+          this.attempts += 1;
+          console.warn(`[baileys] connection closed (${status ?? 'unknown'}), reconnecting in ${wait}ms`);
+          setTimeout(() => {
+            this.reconnecting = false;
+            if (!this.stopped) void this.start(onMessage).catch((error) => {
+              console.error('[baileys] reconnect failed', error);
+            });
+          }, wait);
         }
       }
     });

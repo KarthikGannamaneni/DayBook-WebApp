@@ -1,5 +1,6 @@
 import { DisconnectReason } from 'baileys';
 import { openSocket } from './sources/socket.ts';
+import { acquireLock } from './lock.ts';
 
 /**
  * Lists the WhatsApp groups this number is in, with their ids.
@@ -119,6 +120,9 @@ function print(rows: GroupRow[]): void {
 }
 
 async function main(): Promise<void> {
+  // Running this while the bot is running is what makes the two evict each other.
+  acquireLock(authDir);
+
   for (let i = 1; i <= MAX_ATTEMPTS; i += 1) {
     const result = await attempt();
     if (result !== 'restart') {

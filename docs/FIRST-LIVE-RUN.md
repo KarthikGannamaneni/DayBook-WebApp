@@ -80,6 +80,19 @@ web app is the only place that happens without the service-role key.
 `wa_group_id` is globally unique, not unique per owner — a group can only ever be
 claimed once, or two owners could both point it at their own books.
 
+### Only one bot per session, ever
+
+WhatsApp allows one connection per linked device, and two processes on one auth
+directory do not take turns: each evicts the other with
+`conflict type="replaced"`, both reconnect, and within seconds the group cipher
+state is corrupt — real messages then arrive as `failed to decrypt message:
+Received message with old counter`. It presents as three unrelated bugs and is
+one cause.
+
+The bot now refuses to start if another holds the session, and names the pid to
+kill. If a crash leaves a stale `bot/auth_state.lock` behind, the next start
+detects the dead pid and takes over on its own.
+
 ### Finding a group id while the bot is running
 
 Do **not** run `groups` with the bot running: WhatsApp allows one connection per

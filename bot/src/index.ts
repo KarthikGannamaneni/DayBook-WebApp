@@ -4,6 +4,7 @@ import { SupabaseStore } from './store/supabase.ts';
 import { SupabaseFileStore } from './store/supabase-files.ts';
 import { sharpThumbnailer } from './thumbnail.ts';
 import { DEFAULT_CONFIG, handleMessage } from './pipeline.ts';
+import { acquireLock } from './lock.ts';
 
 /**
  * Wiring, and nothing else. Every decision lives in pipeline.ts, which is where
@@ -19,6 +20,10 @@ import { DEFAULT_CONFIG, handleMessage } from './pipeline.ts';
 const MIN_CALL_SPACING_MS = 4_000;
 
 async function main(): Promise<void> {
+  const authDir = process.env.BAILEYS_AUTH_DIR ?? './auth_state';
+  // Before anything else: refuse to be the second bot on one session.
+  acquireLock(authDir);
+
   const store = SupabaseStore.fromEnv();
   const files = SupabaseFileStore.fromEnv();
 
@@ -38,7 +43,7 @@ async function main(): Promise<void> {
   if (includeOwn) {
     console.warn('[bot] INCLUDE_OWN_MESSAGES=1 — processing messages sent by this account. Testing only.');
   }
-  const source = new BaileysSource(process.env.BAILEYS_AUTH_DIR ?? './auth_state', includeOwn);
+  const source = new BaileysSource(authDir, includeOwn);
 
   await source.start((message) => {
     chain = chain
@@ -58,7 +63,15 @@ async function main(): Promise<void> {
   }
 }
 
+// Baileys throws from its own async paths — a retry request racing a closing
+// socket, for example — and an unhandled rejection would otherwise take the whole
+// bot down over something it recovers from. Log it and keep listening; a session
+// that is genuinely dead surfaces through connection.update instead.
+process.on('unhandledRejection', (reason) => {
+  console.error('[bot] unhandled rejection (continuing)', reason instanceof Error ? reason.message : reason);
+});
+
 void main().catch((error) => {
-  console.error('[bot] fatal', error);
+  console.error('[bot] fatal', error instanceof Error ? error.message : error);
   process.exit(1);
 });
