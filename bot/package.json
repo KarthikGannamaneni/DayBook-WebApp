@@ -3,13 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "start": "tsx --env-file-if-exists=.env src/index.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "smoke": "tsx src/smoke.ts",
-    "groups": "tsx src/groups.ts"
+    "smoke": "tsx --env-file-if-exists=.env src/smoke.ts",
+    "groups": "tsx --env-file-if-exists=.env src/groups.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.45.4",
