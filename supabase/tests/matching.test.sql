@@ -14,7 +14,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 \ir harness/harness.psql
 
-select plan(32);
+select plan(35);
 
 -- Every assertion below is scoped to this owner. A suite that only passes
 -- against a freshly reset database is a suite that will mislead somebody the
@@ -22,6 +22,8 @@ select plan(32);
 \set owner 'a0000000-0000-4000-8000-000000000001'
 
 select tests.make_user('a0000000-0000-4000-8000-000000000001', 'a@test.local');
+-- A second owner, used only by the cross-owner check at the bottom.
+select tests.make_user('b0000000-0000-4000-8000-000000000002', 'b@test.local');
 set local role postgres;
 
 -- ---------------------------------------------------------------------------
@@ -208,17 +210,48 @@ select throws_ok(
   'a file belongs to exactly one of an invoice, a payment, or an unread message'
 );
 
+-- classify_raw_message is SECURITY DEFINER, so it re-checks auth.uid() itself.
+-- That means it must be called as a real session, not as superuser — and the
+-- suite running as postgres is exactly the case the check is there to refuse.
+select tests.authenticate_as('a0000000-0000-4000-8000-000000000001');
+
 select lives_ok(
   $$select public.classify_raw_message('44444444-0000-4000-8000-000000000001', 'payment')$$,
   'the owner can say which side of the ledger it belongs to');
 
-select is((select count(*)::int from public.v_unclassified_documents
-           where owner_id = :'owner'), 0,
-  'and classifying it moves the image onto the new document');
+select is((select count(*)::int from public.v_unclassified_documents), 0,
+  'and classifying it takes the image out of the queue');
 
 select is((select txn_status::text from public.payments
            where source_message_id = '44444444-0000-4000-8000-000000000001'), 'pending',
   'created as pending, because nothing has been read off it yet and a payment that cannot be allocated is the safer default');
+
+-- The three writes it makes, all of which must land. It was SECURITY INVOKER
+-- once, and the two UPDATEs silently matched zero rows because raw_messages and
+-- document_files are deliberately not writable by the owner — so the image stayed
+-- in the queue after it had been classified, with no error anywhere.
+select is((select needs_classification from public.raw_messages
+           where id = '44444444-0000-4000-8000-000000000001'), false,
+  'classifying clears the flag, so the item leaves the queue');
+
+select is((select count(*)::int from public.document_files
+           where raw_message_id = '44444444-0000-4000-8000-000000000001'), 0,
+  'and moves the image off the message onto the document');
+
+-- Bypassing RLS means the function is the only thing standing between one
+-- owner's documents and another's.
+select tests.as_service();
+insert into public.raw_messages (id, owner_id, wa_group_id, wa_message_id, has_media, needs_classification)
+values ('44444444-0000-4000-8000-000000000002', 'a0000000-0000-4000-8000-000000000001',
+        'a-group@g.us', 'wamid.unreadable2', true, true);
+
+select tests.authenticate_as('b0000000-0000-4000-8000-000000000002');
+select throws_ok(
+  $$select public.classify_raw_message('44444444-0000-4000-8000-000000000002', 'invoice')$$,
+  '42501', null,
+  'and one owner cannot classify another owner''s document'
+);
+select tests.as_service();
 
 select * from finish();
 rollback;

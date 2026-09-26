@@ -187,7 +187,13 @@ export class GeminiExtractor implements Extractor {
     private readonly apiKey: string,
     private readonly model = 'gemini-3.8-flash',
     private readonly timeoutMs = 30_000,
-    private readonly attempts = 3,
+    /**
+     * Four tries, 2s / 4s / 8s apart. Observed in production: gemini-3.8-flash
+     * returns 503 "currently experiencing high demand" in bursts, and three
+     * tries a second apart rode straight through one — sending a perfectly
+     * readable payment screenshot to the manual queue over Google's capacity.
+     */
+    private readonly attempts = 4,
   ) {}
 
   async extract(input: ExtractionInput): Promise<Extraction> {
@@ -200,7 +206,7 @@ export class GeminiExtractor implements Extractor {
       } catch (error) {
         lastError = error;
         if (attempt < this.attempts) {
-          await new Promise((resolve) => setTimeout(resolve, 1_000 * 2 ** (attempt - 1)));
+          await new Promise((resolve) => setTimeout(resolve, 2_000 * 2 ** (attempt - 1)));
         }
       }
     }

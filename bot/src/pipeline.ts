@@ -211,13 +211,17 @@ export async function handleMessage(
     // With no image there is nothing to lose: the message body is already
     // stored, and inventing a document from text we could not parse would put a
     // row in the ledger that nothing supports.
-    if (!message.media) return { outcome: 'not-document', rawMessageId: raw.id };
+    if (!message.media) {
+      log('not-document', { waMessageId: message.waMessageId, reason: 'extraction failed, no image' });
+      return { outcome: 'not-document', rawMessageId: raw.id };
+    }
 
     // With an image, we know a document arrived but not which side of the
     // ledger it belongs to. Park the image against the message and let the
     // owner say. Guessing here would file a receipt as a receivable.
     await deps.store.markRawMessage(raw.id, { docKind: 'neither', needsClassification: true });
     await storeFile(message, deps, group.ownerId, { kind: 'raw_message', id: raw.id });
+    log('unclassified', { waMessageId: message.waMessageId, rawMessageId: raw.id });
     return { outcome: 'unclassified', rawMessageId: raw.id };
   }
 
@@ -235,9 +239,13 @@ export async function handleMessage(
   // read rather than writing an empty document.
   if (!fields) {
     log('extract-empty', { waMessageId: message.waMessageId, docKind: extraction.docKind });
-    if (!message.media) return { outcome: 'not-document', rawMessageId: raw.id };
+    if (!message.media) {
+      log('not-document', { waMessageId: message.waMessageId, reason: 'model named a kind but returned nothing' });
+      return { outcome: 'not-document', rawMessageId: raw.id };
+    }
     await deps.store.markRawMessage(raw.id, { docKind: 'neither', needsClassification: true });
     await storeFile(message, deps, group.ownerId, { kind: 'raw_message', id: raw.id });
+    log('unclassified', { waMessageId: message.waMessageId, rawMessageId: raw.id });
     return { outcome: 'unclassified', rawMessageId: raw.id };
   }
 
@@ -311,6 +319,6 @@ export async function handleMessage(
     }
   }
 
-  log('saved', { kind: side, documentId: saved.id, proposed, attention });
+  log('saved', { kind: side, documentId: saved.id, waMessageId: message.waMessageId, proposed, attention });
   return { outcome: 'saved', kind: side, documentId: saved.id, proposed, attention };
 }
