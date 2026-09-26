@@ -112,6 +112,16 @@ Or put them in `bot/.env` — `.env` is gitignored — and just run
 It prints `[bot] listening` and then one JSON line per message. Leave it in the
 foreground where you can see it and kill it with ctrl-C.
 
+### If you are paired to your own number
+
+Every message you post is then `fromMe`, and the bot drops those before it logs
+anything — no line, no row, nothing to debug, because in production `fromMe`
+means only the bot's own traffic and processing it would be a loop.
+
+Set `INCLUDE_OWN_MESSAGES=1` in `bot/.env` while testing. The bot prints a
+warning on startup so it cannot be left on by accident, and it must be removed
+before a real customer's group.
+
 ## 3. Post two documents
 
 Into the linked group, from any member:

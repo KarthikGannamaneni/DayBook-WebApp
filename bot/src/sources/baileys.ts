@@ -19,7 +19,22 @@ export class BaileysSource implements MessageSource {
   private socket: WASocket | null = null;
   private stopped = false;
 
-  constructor(private readonly authDir = './auth_state') {}
+  /**
+   * @param includeOwnMessages Process messages sent BY the paired account.
+   *
+   * Off by default, and that is the right default: in production the bot runs on
+   * a dedicated number that never posts documents, so `fromMe` means only the
+   * bot's own traffic and processing it would be a loop.
+   *
+   * It exists because during testing the bot is often paired to the tester's own
+   * number, and then every message they can easily produce is `fromMe` and
+   * vanishes silently — no log line, no row, nothing to debug. Turn it on with
+   * INCLUDE_OWN_MESSAGES=1 while testing; leave it off for a real customer.
+   */
+  constructor(
+    private readonly authDir = './auth_state',
+    private readonly includeOwnMessages = false,
+  ) {}
 
   async start(onMessage: MessageHandler): Promise<void> {
     const { socket, saveCreds } = await openSocket(this.authDir);
@@ -63,8 +78,10 @@ export class BaileysSource implements MessageSource {
   private async toIncoming(raw: Parameters<typeof downloadMediaMessage>[0]): Promise<IncomingMessage | null> {
     const key = raw.key;
     const remoteJid = key?.remoteJid;
-    // Groups only, and never the bot's own messages.
-    if (!remoteJid?.endsWith('@g.us') || key?.fromMe) return null;
+    // Groups only.
+    if (!remoteJid?.endsWith('@g.us')) return null;
+    // And normally not the paired account's own messages — see the constructor.
+    if (key?.fromMe && !this.includeOwnMessages) return null;
     if (!key?.id) return null;
 
     const content = raw.message;

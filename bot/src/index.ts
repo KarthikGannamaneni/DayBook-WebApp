@@ -32,7 +32,13 @@ async function main(): Promise<void> {
   };
 
   let chain: Promise<unknown> = Promise.resolve();
-  const source = new BaileysSource(process.env.BAILEYS_AUTH_DIR ?? './auth_state');
+  // Testing only: see the BaileysSource constructor. Paired to your own number,
+  // every message you post is `fromMe` and is otherwise dropped in silence.
+  const includeOwn = process.env.INCLUDE_OWN_MESSAGES === '1';
+  if (includeOwn) {
+    console.warn('[bot] INCLUDE_OWN_MESSAGES=1 — processing messages sent by this account. Testing only.');
+  }
+  const source = new BaileysSource(process.env.BAILEYS_AUTH_DIR ?? './auth_state', includeOwn);
 
   await source.start((message) => {
     chain = chain

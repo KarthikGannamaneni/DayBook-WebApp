@@ -755,7 +755,11 @@ should move to reflect it. Find out in week two, not week eight.
   gets muted, and a muted bot's errors go unnoticed. A text reply only when
   something needs a human.
 - **Whose messages count?** Everyone in the group — staff forwarding is the
-  entire use case. An allowlist is a Settings toggle if noise appears.
+  entire use case. An allowlist is a Settings toggle if noise appears. With one
+  exception that only matters while testing: messages from the paired account
+  itself are dropped, since in production that account is the bot and never posts
+  documents. Pair the bot to the owner's own number and their documents become
+  invisible — see `INCLUDE_OWN_MESSAGES`.
 - **What happens when the bot is removed from the group?** Nothing further
   arrives, silently, and the balances quietly go stale. Worth a warning in the
   UI when no message has been seen in N days.
