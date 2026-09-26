@@ -14,6 +14,16 @@ import type { Extraction, ExtractionInput, Extractor, TxnStatus } from './types.
 
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 
+/**
+ * Pinned, not `gemini-flash-latest`. An alias that moves under you is fine for a
+ * chatbot and wrong here: the whole point of milestone 4 is measuring extraction
+ * accuracy on real documents, and a number measured against a model that has
+ * since changed is not a number. Bump it deliberately and re-measure.
+ *
+ * gemini-2.5-flash, which this originally used, is no longer available to new
+ * API keys at all — Google returns 404 with a note pointing at the 3.x line.
+ */
+
 export const EXTRACTION_SCHEMA = {
   type: 'object',
   required: ['doc_kind', 'confidence'],
@@ -175,7 +185,7 @@ export function parseExtraction(raw: unknown): Extraction {
 export class GeminiExtractor implements Extractor {
   constructor(
     private readonly apiKey: string,
-    private readonly model = 'gemini-2.5-flash',
+    private readonly model = 'gemini-3.8-flash',
     private readonly timeoutMs = 30_000,
     private readonly attempts = 3,
   ) {}

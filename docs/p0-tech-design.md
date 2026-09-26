@@ -43,7 +43,7 @@ flowchart LR
         BOT --> PIPE
     end
 
-    PIPE -->|1 call per message| GEM[Gemini 2.5 Flash<br/>structured JSON]
+    PIPE -->|1 call per message| GEM[Gemini 3.8 Flash<br/>structured JSON]
     PIPE -->|originals| ST[(Supabase Storage<br/>private bucket)]
     PIPE -->|invoice / payment rows| DB[(Supabase Postgres)]
     PIPE -->|propose_matches| MATCH
@@ -114,7 +114,7 @@ migration story change.
 | DB + Auth | **Supabase** | 500 MB DB, 50k MAU, 2 projects | Pauses after 7 days idle; the bot's writes prevent it |
 | File storage | **Supabase Storage** | 1 GB | Forced by the hosting choice — see §2.4, §5 |
 | Web app | **GitHub Pages** (static export) | Free, no account beyond GitHub | See §2.4 |
-| Extraction | **Gemini 2.5 Flash** | 15 RPM, 1,500 req/day | **Free tier trains on your data** — and now that data is your *customers'* |
+| Extraction | **Gemini 3.8 Flash** | 15 RPM, 1,500 req/day | **Free tier trains on your data** — and now that data is your *customers'*. Pinned, not `flash-latest`: an accuracy number measured against a moving alias is not a number. 2.5 Flash is already 404 for new keys |
 | Fuzzy matching | **`pg_trgm`** | in Postgres | No service, no index server, no embedding model |
 
 **Why AMD micro and not ARM A1.** Oracle reclaims idle Always Free A1

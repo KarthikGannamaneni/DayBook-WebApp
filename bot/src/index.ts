@@ -24,7 +24,7 @@ async function main(): Promise<void> {
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY is required');
-  const extractor = new GeminiExtractor(apiKey, process.env.GEMINI_MODEL ?? 'gemini-2.5-flash');
+  const extractor = new GeminiExtractor(apiKey, process.env.GEMINI_MODEL ?? 'gemini-3.8-flash');
 
   const config = {
     ...DEFAULT_CONFIG,
