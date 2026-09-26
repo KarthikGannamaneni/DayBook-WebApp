@@ -47,6 +47,11 @@ First run prints a QR code — scan it from WhatsApp → Linked devices. That wr
 `bot/auth_state/`, which **is a credential**: anyone who copies that directory
 reads every group this number is in. It is gitignored; keep it that way.
 
+You should see `pairing configured successfully`, a brief reconnect, and then the
+list. A **515** right after pairing is WhatsApp asking for the socket to be
+re-established, not a failure — the command handles it, and so does the bot's
+listener.
+
 If it dies with **`connection closed (405)`** before showing a QR code, the
 announced WhatsApp Web version was rejected. The socket now looks the current
 version up at runtime (`bot/src/sources/socket.ts`), so this should not recur —
