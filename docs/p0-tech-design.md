@@ -620,8 +620,13 @@ editable; an edit re-runs matching.
 
 ### 5. Settings
 
-WhatsApp groups the bot is in, and which owner each belongs to. Manual entry
-for **cash payments** and for invoices that never reached the group (§10).
+WhatsApp groups the bot is in, and which owner each belongs to. The ids come
+from `pnpm --filter bot groups`, which connects, prints every group the paired
+number can see, and exits — linking is a paste into this form rather than an
+in-group command, because anyone in the group could re-point the bot with a
+command and the people posting documents are not the people who installed it.
+Manual entry for **cash payments** and for invoices that never reached the group
+(§10).
 Sign-in is an email magic link: phone OTP needs an SMS provider and, in India,
 DLT registration — weeks of lead time for no P0 benefit.
 

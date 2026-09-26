@@ -8,7 +8,8 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "smoke": "tsx src/smoke.ts"
+    "smoke": "tsx src/smoke.ts",
+    "groups": "tsx src/groups.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.45.4",

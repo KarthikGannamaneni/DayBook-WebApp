@@ -52,6 +52,16 @@ The smoke run posts an invoice, a matching payment and a line of chatter. If it
 ends with one proposal in the review queue, everything works. It needs a linked
 group first — add one in the web app's Settings, or pass `SMOKE_GROUP_ID`.
 
+To see which groups the paired number is actually in, and their ids:
+
+```bash
+pnpm --filter bot groups
+```
+
+For the first run against a real WhatsApp group and a real Gemini key, follow
+**[docs/FIRST-LIVE-RUN.md](docs/FIRST-LIVE-RUN.md)** — including the part about
+what each way of failing tells you, which is most of the value of doing it.
+
 ## Four things to know before pointing this at a customer
 
 **Gemini's free tier trains on what you send it**, including human review. Under
