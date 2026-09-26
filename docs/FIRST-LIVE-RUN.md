@@ -80,6 +80,23 @@ web app is the only place that happens without the service-role key.
 `wa_group_id` is globally unique, not unique per owner — a group can only ever be
 claimed once, or two owners could both point it at their own books.
 
+### Finding a group id while the bot is running
+
+Do **not** run `groups` with the bot running: WhatsApp allows one connection per
+linked device, so the two fight and each keeps replacing the other
+(`conflict type="replaced"`, code 440). The bot recovers, but it is pointless
+churn on a session you want to look boring.
+
+Instead, post anything into the group and read the bot's own log:
+
+```
+{"event":"ignored","reason":"unknown-group","waGroupId":"1203...@g.us"}
+```
+
+That line exists precisely so an unlinked group can be identified without
+storing anything from it — the bot exits before any write, any Gemini call, any
+row. Copy the id from there.
+
 ## 2. Start the bot
 
 ```bash
